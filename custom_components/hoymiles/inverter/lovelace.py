@@ -1,11 +1,13 @@
 """Best-effort Lovelace dashboard creation for a Hoymiles MS-G2 device.
 
 Home Assistant's ``lovelace`` component does not expose a public API for
-creating a storage dashboard, so this module reaches into its internals
-(``DashboardsCollection`` and ``LovelaceStorage``) the same way the built-in
-map panel does.  Those internals are deprecated in core and slated for removal,
-so *every* operation here is wrapped and must never raise - a failed dashboard
-is logged and skipped, never allowed to break device setup.
+creating a storage dashboard, so this module goes through the
+``lovelace/dashboards/*`` websocket commands (see :class:`_CommandConnection`
+for why only those reach the collection the running instance actually uses)
+and keeps its own ``LovelaceStorage`` for the card config.  Those internals are
+deprecated in core and slated for removal, so *every* operation here is wrapped
+and must never raise - a failed dashboard is logged and skipped, never allowed
+to break device setup.
 
 The dashboard mirrors the official integration's G3-prefixed panels: three
 views (system / device / control) built from the bundled cards, keyed to the
@@ -28,12 +30,14 @@ built in Python and could not follow the language selector.  It now only feeds
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN, ROLE_SLAVE, is_inverter_dev_id, model_from_dev_id
 
@@ -513,6 +517,129 @@ def _read_json_file(path: str) -> Any:
         return json.load(handle)
 
 
+_COMMANDS = "websocket_api"
+# A dashboard command is a bookkeeping write; if it has not answered by now the
+# frontend is gone and waiting longer would hold up device setup for nothing.
+_COMMAND_TIMEOUT = 10.0
+
+
+class _CommandUser:
+    """The only attributes the dashboard commands read from a connection."""
+
+    id = "hoymiles-dashboard"
+    is_admin = True
+    is_owner = True
+    is_active = True
+    system_generated = False
+
+
+class _CommandConnection:
+    """Just enough of an ``ActiveConnection`` to run one command in-process.
+
+    ``lovelace`` keeps its ``DashboardsCollection`` in a local variable of
+    ``async_setup``: it never reaches ``hass.data``.  ``LovelaceData`` holds the
+    per-``url_path`` configs, *not* the collection itself, so building a
+    ``DashboardsCollection(hass)`` of our own gives a second object with a
+    private copy of the data.  Whatever that copy creates is written to disk,
+    while the object the delete button talks to never hears about it: the entry
+    sits in the sidebar and in *Settings -> Dashboards*, and
+    ``lovelace/dashboards/delete`` answers ``not_found``.  Worse, the next time
+    Home Assistant saves that file itself it writes its own items and the entry
+    is gone from disk.
+
+    The commands registered under ``lovelace/dashboards/*`` are the only
+    surviving references to the live collection, so calling one of them is the
+    only way to make a dashboard written here an ordinary dashboard: Home
+    Assistant persists it, registers its panel, and keeps it in the collection
+    that delete, update and rename act on.
+
+    The connection is not a socket.  ``send_result``/``send_error`` resolve the
+    future the caller awaits, which turns the command into a plain ``await``.
+    """
+
+    subscriptions: dict[int, Any] = {}
+
+    def __init__(self, future: asyncio.Future[Any]) -> None:
+        """Wire the replies to ``future``."""
+        self._future = future
+        self.user = _CommandUser()
+
+    def send_result(self, msg_id: int, data: Any = None) -> None:
+        """Deliver the command's answer."""
+        if not self._future.done():
+            self._future.set_result(data)
+
+    def send_error(self, msg_id: int, code: str, message: str) -> None:
+        """Turn the command's error reply into the caller's exception."""
+        if not self._future.done():
+            self._future.set_exception(HomeAssistantError(f"{code}: {message}"))
+
+    def async_handle_exception(self, msg: dict[str, Any], err: Exception) -> None:
+        """Surface an exception raised *inside* the command."""
+        if not self._future.done():
+            self._future.set_exception(err)
+
+    def send_message(self, msg: Any) -> None:
+        """Ignore unsolicited events; nothing here subscribes."""
+
+
+async def _async_lovelace_command(
+    hass: HomeAssistant, command: str, payload: dict[str, Any]
+) -> Any:
+    """Run one ``lovelace/dashboards/*`` command and return its reply.
+
+    Raises when the command is unknown, answers with an error, or does not
+    answer in time - every caller decides for itself whether that is worth a
+    log line, because a dashboard must never take down device setup.
+    """
+    handlers = hass.data.get(_COMMANDS)
+    entry = handlers.get(command) if isinstance(handlers, dict) else None
+    # ``websocket_api.async_register_command`` stores ``(handler, schema)``.
+    handler = entry[0] if isinstance(entry, tuple) else entry
+    if handler is None:
+        raise HomeAssistantError(f"Home Assistant has no {command} command")
+
+    future: asyncio.Future[Any] = hass.loop.create_future()
+    handler(hass, _CommandConnection(future), {"id": 1, "type": command, **payload})
+    return await asyncio.wait_for(future, _COMMAND_TIMEOUT)
+
+
+async def _async_dashboard_items(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Return every dashboard entry Home Assistant currently holds.
+
+    An empty list is returned on any failure, which makes every caller treat the
+    dashboard as absent and rebuild it - the same thing a first install does.
+    """
+    try:
+        items = await _async_lovelace_command(hass, "lovelace/dashboards/list", {})
+    except Exception:  # noqa: BLE001 - a dashboard is never worth breaking setup
+        _LOGGER.warning("Could not list dashboards", exc_info=True)
+        return []
+    return [item for item in items or [] if isinstance(item, dict)]
+
+
+def _dashboard_store(hass: HomeAssistant, item: dict[str, Any]) -> Any:
+    """Return the ``LovelaceStorage`` Home Assistant uses for ``item``.
+
+    The live object is preferred: saving through a second ``LovelaceStorage``
+    for the same key writes the right file but leaves the copy the frontend
+    reads untouched until the next restart.  One is built only when the entry is
+    not in the registry yet - a dashboard this process has not registered.
+    """
+    from homeassistant.components.lovelace.const import CONF_URL_PATH  # noqa: PLC0415
+    from homeassistant.components.lovelace.dashboard import (  # noqa: PLC0415
+        LovelaceStorage,
+    )
+
+    lovelace_data = hass.data.get("lovelace")
+    dashboards = getattr(lovelace_data, "dashboards", None)
+    if isinstance(dashboards, dict):
+        store = dashboards.get(item.get(CONF_URL_PATH))
+        if store is not None:
+            return store
+    return LovelaceStorage(hass, item)
+
+
 async def async_ensure_dashboard(
     hass: HomeAssistant,
     dev_id: str,
@@ -538,13 +665,9 @@ async def async_ensure_dashboard(
     model = _resolve_model(hass, dev_id)
 
     try:
-        from homeassistant.components import frontend  # noqa: PLC0415
-        from homeassistant.components.lovelace import dashboard  # noqa: PLC0415
         from homeassistant.components.lovelace.const import (  # noqa: PLC0415
             CONF_ALLOW_SINGLE_WORD,
             CONF_ICON,
-            CONF_REQUIRE_ADMIN,
-            CONF_SHOW_IN_SIDEBAR,
             CONF_TITLE,
             CONF_URL_PATH,
         )
@@ -578,17 +701,14 @@ async def async_ensure_dashboard(
         )
         return
 
-    try:
-        collection = dashboard.DashboardsCollection(hass)
-        await collection.async_load()
-        existing = None
-        for candidate in collection.async_items():
-            if candidate.get(CONF_URL_PATH) == url_path:
-                existing = candidate
-                break
-    except Exception:  # noqa: BLE001 - never break setup because of a dashboard
-        _LOGGER.warning("Could not inspect dashboards collection for %s", dev_id, exc_info=True)
-        return
+    # Nothing in the live registry under this slug, so ask the collection itself:
+    # the dashboard may have been created by an earlier release, before this
+    # process registered any panel.
+    existing = None
+    for candidate in await _async_dashboard_items(hass):
+        if candidate.get(CONF_URL_PATH) == url_path:
+            existing = candidate
+            break
 
     if existing is not None:
         # Already created by an earlier version.  The views and the name are the
@@ -597,36 +717,46 @@ async def async_ensure_dashboard(
         _LOGGER.debug("Dashboard %s already in storage", url_path)
         current = existing.get(CONF_TITLE) or ""
         if _is_generated_title(current, dev_id):
-            await _async_rename(collection, existing, url_path, title)
+            await _async_rename(hass, existing, url_path, title)
         # An icon an older release generated is migrated the same way, and only
         # while it is still that exact icon: a user who picked their own keeps
         # it, and re-running this is a no-op.
         if (existing.get(CONF_ICON) or "") == _LEGACY_DASHBOARD_ICON:
-            await _async_reicon(collection, existing, url_path)
+            await _async_reicon(hass, existing, url_path)
         # The view set is the user's, but the role gate is not a preference: a
         # follower has no System data to draw.  Applied to whatever is stored.
         await _async_sync_role(
-            hass, dashboard.LovelaceStorage(hass, existing), dev_id, url_path, role
+            hass, _dashboard_store(hass, existing), dev_id, url_path, role
         )
         return
 
-    # Create the dashboard entry in ``.storage/lovelace_dashboards``.
+    # Create the dashboard entry through the live collection, which persists it
+    # to ``.storage/lovelace_dashboards``, registers the sidebar panel and keeps
+    # it in the object delete/update act on.  See :class:`_CommandConnection`.
     try:
-        item = await collection.async_create_item(
+        item = await _async_lovelace_command(
+            hass,
+            "lovelace/dashboards/create",
             {
                 CONF_ALLOW_SINGLE_WORD: True,
                 CONF_ICON: DASHBOARD_ICON,
                 CONF_TITLE: title,
                 CONF_URL_PATH: url_path,
-            }
+            },
         )
     except Exception:  # noqa: BLE001
         _LOGGER.warning("Could not create dashboard entry for %s", dev_id, exc_info=True)
         return
 
-    # Persist the views into ``.storage/lovelace.<id>``.
+    if not isinstance(item, dict):
+        _LOGGER.warning("Dashboard entry for %s came back empty", dev_id)
+        return
+
+    # Persist the views into ``.storage/lovelace.<id>``.  The store comes from
+    # the live registry, which the create above just populated, so the frontend
+    # sees the cards without waiting for a restart.
+    store = _dashboard_store(hass, item)
     try:
-        store = dashboard.LovelaceStorage(hass, item)
         await store.async_save(
             {
                 "views": _build_views(
@@ -638,7 +768,9 @@ async def async_ensure_dashboard(
     except Exception:  # noqa: BLE001
         _LOGGER.warning("Could not save dashboard views for %s", dev_id, exc_info=True)
         try:
-            await collection.async_delete_item(item["id"])
+            await _async_lovelace_command(
+                hass, "lovelace/dashboards/delete", {"dashboard_id": item["id"]}
+            )
         except Exception:  # noqa: BLE001
             pass
         return
@@ -648,26 +780,6 @@ async def async_ensure_dashboard(
     # fresh install usually has not seen ``event/state`` yet, and the sync has to
     # be able to run the moment it does (see ``async_sync_role``).
     await _async_sync_role(hass, store, dev_id, url_path, role)
-
-    # Adopt the new store into the live registry, then register the sidebar
-    # panel.  ``async_register_built_in_panel`` is a plain @callback, so it is
-    # called synchronously (never awaited).
-    dashboards[url_path] = store
-
-    try:
-        frontend.async_register_built_in_panel(
-            hass,
-            "lovelace",
-            sidebar_title=title,
-            sidebar_icon=DASHBOARD_ICON,
-            frontend_url_path=url_path,
-            config={"mode": "storage"},
-            require_admin=item.get(CONF_REQUIRE_ADMIN, False),
-            show_in_sidebar=item.get(CONF_SHOW_IN_SIDEBAR, True),
-        )
-    except Exception:  # noqa: BLE001
-        _LOGGER.warning("Could not register dashboard panel for %s", dev_id, exc_info=True)
-        return
 
     _LOGGER.info("Created Lovelace dashboard %s (%s)", url_path, title)
 
@@ -680,31 +792,27 @@ async def _async_migrate_title(
     The live dashboards dict is populated from storage before this integration's
     platforms are set up, so the fast path - not the storage branch - is where an
     existing dashboard is usually seen.  The title therefore has to be checked
-    here, which means reading the dashboards collection; a per-process memo keeps
-    that to a single read per device instead of one per reload.  After the first
-    run the stored title equals ``dev_id`` and nothing further happens.
+    here, which means reading the dashboards collection.  After the first run
+    the stored title equals ``dev_id`` and nothing further happens.
     """
     if url_path in _TITLE_CHECKED:
         return
     _TITLE_CHECKED.add(url_path)
 
     try:
-        from homeassistant.components.lovelace import dashboard  # noqa: PLC0415
         from homeassistant.components.lovelace.const import (  # noqa: PLC0415
             CONF_ICON,
             CONF_TITLE,
             CONF_URL_PATH,
         )
 
-        collection = dashboard.DashboardsCollection(hass)
-        await collection.async_load()
-        for item in collection.async_items():
+        for item in await _async_dashboard_items(hass):
             if item.get(CONF_URL_PATH) != url_path:
                 continue
             if _is_generated_title(item.get(CONF_TITLE) or "", dev_id):
-                await _async_rename(hass, collection, item, url_path, title)
+                await _async_rename(hass, item, url_path, title)
             if (item.get(CONF_ICON) or "") == _LEGACY_DASHBOARD_ICON:
-                await _async_reicon(hass, collection, item, url_path)
+                await _async_reicon(hass, item, url_path)
             return
     except Exception:  # noqa: BLE001 - a title is never worth breaking setup for
         _LOGGER.debug("Could not inspect dashboard title for %s", url_path, exc_info=True)
@@ -712,7 +820,6 @@ async def _async_migrate_title(
 
 async def _async_rename(
     hass: HomeAssistant,
-    collection: Any,
     item: dict[str, Any],
     url_path: str,
     title: str,
@@ -725,18 +832,23 @@ async def _async_rename(
     try:
         from homeassistant.components.lovelace.const import CONF_TITLE  # noqa: PLC0415
 
-        await collection.async_update_item(item["id"], {CONF_TITLE: title})
+        updated = await _async_lovelace_command(
+            hass,
+            "lovelace/dashboards/update",
+            {"dashboard_id": item["id"], CONF_TITLE: title},
+        )
     except Exception:  # noqa: BLE001
         _LOGGER.debug("Could not retitle dashboard %s", url_path, exc_info=True)
         return
 
+    if isinstance(updated, dict):
+        item.update(updated)
     _LOGGER.info("Migrated dashboard %s title to %s", url_path, title)
     _sync_sidebar_title(hass, url_path, title)
 
 
 async def _async_reicon(
     hass: HomeAssistant,
-    collection: Any,
     item: dict[str, Any],
     url_path: str,
 ) -> None:
@@ -744,17 +856,23 @@ async def _async_reicon(
 
     Only ever reached while the stored icon is exactly the one an earlier
     release generated, so a user-chosen icon is never overwritten, and running
-    it again is a no-op.  The panel is re-registered afterwards because that is
-    the only supported way to change the icon drawn in the sidebar.
+    it again is a no-op.  Home Assistant re-registers the panel from the change
+    listener after the update, which is how the icon reaches the sidebar.
     """
     try:
         from homeassistant.components.lovelace.const import CONF_ICON  # noqa: PLC0415
 
-        await collection.async_update_item(item["id"], {CONF_ICON: DASHBOARD_ICON})
+        updated = await _async_lovelace_command(
+            hass,
+            "lovelace/dashboards/update",
+            {"dashboard_id": item["id"], CONF_ICON: DASHBOARD_ICON},
+        )
     except Exception:  # noqa: BLE001
         _LOGGER.debug("Could not re-icon dashboard %s", url_path, exc_info=True)
         return
 
+    if isinstance(updated, dict):
+        item.update(updated)
     _LOGGER.info("Migrated dashboard %s icon to %s", url_path, DASHBOARD_ICON)
     _sync_sidebar_title(hass, url_path, item.get("title") or url_path)
 
@@ -765,7 +883,7 @@ async def _async_find_store(hass: HomeAssistant, url_path: str) -> Any:
     The live registry is preferred because it is the object the frontend reads:
     saving through a second ``LovelaceStorage`` for the same key would write the
     right file but leave the loaded copy in memory untouched until a restart.
-    The collection is only consulted when the registry has no entry for the slug
+    The collection is only asked when the registry has no entry for the slug
     (a dashboard created by an earlier release, before the registry was
     populated in this process).
     """
@@ -777,14 +895,11 @@ async def _async_find_store(hass: HomeAssistant, url_path: str) -> Any:
             return store
 
     try:
-        from homeassistant.components.lovelace import dashboard  # noqa: PLC0415
         from homeassistant.components.lovelace.const import CONF_URL_PATH  # noqa: PLC0415
 
-        collection = dashboard.DashboardsCollection(hass)
-        await collection.async_load()
-        for item in collection.async_items():
+        for item in await _async_dashboard_items(hass):
             if item.get(CONF_URL_PATH) == url_path:
-                return dashboard.LovelaceStorage(hass, item)
+                return _dashboard_store(hass, item)
     except Exception:  # noqa: BLE001 - a dashboard is never worth breaking setup
         _LOGGER.debug("Could not locate dashboard %s", url_path, exc_info=True)
 

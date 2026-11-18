@@ -27,11 +27,14 @@ from .const import (
     FRONTEND_ASSETS,
     FRONTEND_IMAGES,
     FRONTEND_URL,
+    PAYLOAD_AVAILABLE,
     PLATFORMS,
+    T_HA_STATUS,
 )
 from .coordinator import HoymilesCoordinator
 from .discovery_override import FirmwareDiscoveryPatcher
 from .keepalive import PowerCtrlKeepAlive
+from .mqtt_util import async_publish
 from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,6 +81,11 @@ async def async_setup_inverter_entry(
 
     entry.async_on_unload(coordinator.async_add_listener(_maybe_prune))
     _maybe_prune()
+
+    # Both subscriptions above are in place, so the device's answer to the
+    # online notice lands on a listener instead of bouncing off an unsubscribed
+    # topic.
+    await _async_announce_ha_online(hass, dev_id)
 
     # Re-publishes `power_ctrl` so the firmware's ~60 s lease stays in force.
     # It lives here rather than in the card, because a browser timer stops the
@@ -129,6 +137,36 @@ async def async_setup_inverter_entry(
     _async_track_role(hass, entry, coordinator, dev_id, lovelace)
 
     return True
+
+
+async def _async_announce_ha_online(hass: HomeAssistant, dev_id: str) -> None:
+    """Publish ``homeassistant/status = online`` so the device re-announces.
+
+    The firmware only rebuilds its discovery payloads - and re-publishes its own
+    MQTT/MQTTS topics for the current round - after it reads ``online`` on this
+    topic.  Home Assistant publishes that message once, when its MQTT
+    integration starts, which leaves a window: a unit that was asleep, or whose
+    broker session dropped, at that moment stays silent for the rest of the
+    process and the entities it would have re-registered never come back.
+
+    Sending it again on every config-entry setup (startup, reload, and the
+    options flow's re-run) closes that window.  The topic is a broadcast - every
+    device family subscribes to it - so the extra publish costs one packet per
+    inverter and is harmless to units that are already talking.
+
+    ``qos=1`` and ``retain=False`` as the protocol specifies.  Never raises: a
+    device that sleeps through this one is retried on the next setup, and
+    nothing about entity creation depends on it.
+    """
+    try:
+        await async_publish(
+            hass, T_HA_STATUS, PAYLOAD_AVAILABLE, qos=1, retain=False
+        )
+        _LOGGER.debug("Announced Home Assistant online for %s", dev_id)
+    except Exception:  # noqa: BLE001 - never break setup over a notification
+        _LOGGER.debug(
+            "Could not announce Home Assistant online for %s", dev_id, exc_info=True
+        )
 
 
 @callback

@@ -118,6 +118,17 @@ T_AVAILABILITY: Final = "hoymiles/{dev_id}/availability"
 PAYLOAD_AVAILABLE: Final = "online"
 PAYLOAD_NOT_AVAILABLE: Final = "offline"
 
+# Broadcast topic the firmware subscribes to ("HA online notice", protocol §2).
+# Reading ``online`` is what makes a device rebuild its discovery payloads and
+# re-publish its own MQTT/MQTTS topics for this round; ``offline`` means Home
+# Assistant is going away and may be ignored.  Every device family - storage and
+# inverter alike - subscribes to it, so the topic carries no device id.
+#
+# Home Assistant publishes this itself when its MQTT integration starts, but a
+# device that was unreachable at that moment has missed it until the next
+# restart.  Sending it once per config-entry setup closes that window.
+T_HA_STATUS: Final = "homeassistant/status"
+
 # State topic owned by the integration for the EMS mode select.  The firmware
 # select has no state_topic of its own, so it would read "unknown" after every
 # HA restart.  This topic carries the last commanded value (retained) and is
