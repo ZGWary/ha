@@ -74,6 +74,11 @@ T_TOU_STATUS: Final = "homeassistant/sensor/{dev_id}/tou_plan/status"
 # Discovery topic used for auto-discovery in the config flow.
 T_DISCOVERY: Final = "homeassistant/switch/+/config"
 
+# Liveness wildcard used by the config flow.  ``quick/state`` is pushed once a
+# second while the device is connected, so it - unlike the retained discovery
+# configs - tells a currently reachable device apart from a stale one.
+T_QUICK_WILDCARD: Final = "homeassistant/sensor/+/quick/state"
+
 # ---------------------------------------------------------------------------
 # Firmware discovery patching (see discovery_override.py)
 # ---------------------------------------------------------------------------
@@ -340,22 +345,37 @@ def model_from_dev_id(dev_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Availability / staleness (protocol §22 pushes every 1 s, §23/§24 every 5 min)
 # ---------------------------------------------------------------------------
-# How often the availability watchdog re-evaluates source freshness.
-AVAILABILITY_WATCHDOG_SECONDS: Final = 30
+# How often the availability watchdog re-evaluates source freshness.  Short
+# against the one minute window below, so a disconnected device is noticed
+# between 60 and 75 seconds after its last message instead of up to 90.
+AVAILABILITY_WATCHDOG_SECONDS: Final = 15
 
 # A ``system/state`` report arriving right after an EMS mode command may still
 # carry the previous mode (the topic is only pushed every 5 minutes).  Such
 # reports are ignored for this long so the select does not flip back.
 EMS_MODE_ECHO_GUARD_SECONDS: Final = 30
 
+# One minute without a per-second ``quick/state`` frame means the device is not
+# talking to the broker any more.
+QUICK_STALE_SECONDS: Final = 60
+
+# How long a freshly set up entry may wait for its first ``quick/state`` before
+# the retained ``online`` it inherited from the previous run is distrusted.
+# Without this a device that was already unplugged when Home Assistant started
+# would keep the retained verdict forever, because nothing ever contradicts it.
+AVAILABILITY_STARTUP_GRACE_SECONDS: Final = 90
+
 # A source is alive while its last message is younger than its window.
 # Event driven topics (TOU ack/status, and ``event/state`` which is only pushed
 # on connect and on change) are excluded on purpose: giving them a window would
 # declare a healthy device offline the moment nothing changed for long enough.
+#
+# Only ``quick/state`` is listed: it is the sole proof of life, because it is
+# pushed once a second.  ``device/state`` and ``system/state`` arrive every five
+# minutes, so any window over them has to be generous - and 11 minutes over them
+# was exactly what kept an unplugged device looking online.
 SOURCE_STALE_SECONDS: Final = {
-    SRC_QUICK: 120,
-    SRC_DEVICE: 660,
-    SRC_SYSTEM: 660,
+    SRC_QUICK: QUICK_STALE_SECONDS,
 }
 
 # TOU ack status codes (protocol §17 / §19)

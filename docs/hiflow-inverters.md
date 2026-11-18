@@ -291,6 +291,44 @@
 **机型门控**：协议只声明微逆支持这两条命令，微逆的 `supported_topics` 里确实同时带 `factory_reset` 和 `reset_ble_pin_code`（见上文实测清单）。卡片侧对应两个选项 `show_factory_reset` / `show_ble_pin_reset`，不填时**按 PID 自行判断**（`MAINTENANCE_PIDS = 1650 / 4160 / 4161 / 4162`），微储的 `2800` 自然不显示；`lovelace.py` 生成微储 control 卡时还会把这两个键显式写成 `false`，让意图在生成的 JSON 里也可见。这样已有的旧仪表盘不需要任何迁移就行为正确。
 
 
+## 在线判定与设备检索
+
+微逆的「在线」只由 `quick/state` 决定，因为它是**唯一秒级推送**的主题（1 Hz）。
+`const.SOURCE_STALE_SECONDS` 因此只含 `SRC_QUICK`，窗口 `QUICK_STALE_SECONDS = 60` 秒：
+
+```python
+SOURCE_STALE_SECONDS = {SRC_QUICK: 60}
+```
+
+`device/state` 虽然也带真实读数，但 5 分钟才来一次，给不了「现在还在不在」这种结论；
+给它设窗口必然是「短了误判、长了瞒报」——早期那个基于它的 11 分钟窗口，正是设备拔电
+后仍显示在线的直接原因。它现在是**数据**，不是心跳。
+
+看门狗 `AVAILABILITY_WATCHDOG_SECONDS = 15`，所以断连会在最后一条报文之后
+**60–75 秒**内被发现，随后把 `hoymiles/<dev_id>/availability` 置为 `offline`。
+
+### 启动宽限期
+
+新建条目有 `AVAILABILITY_STARTUP_GRACE_SECONDS = 90` 秒宽限：期间没收到任何报文时
+`_evaluate_availability()` 返回 `None`，沿用 broker 上 retained 的判定，避免 HA 重启
+瞬间把所有实体清空。超过宽限期就只看证据，因此「HA 启动时设备已经拔电」这种情况也能
+被纠正——否则那条陈旧的 retained `online` 没有任何东西会去推翻它。
+
+### 配置流程只列出正在推送秒级数据的设备
+
+`homeassistant/switch/<dev_id>/config` 是 **retained** 的，设备早就停止通信了 broker
+照样留着，所以它本身不构成任何证据。微逆的发现函数因此订阅两个主题：
+
+| 主题 | 作用 |
+| --- | --- |
+| `homeassistant/switch/+/config` | 只提供**候选**（retained，可能非常陈旧） |
+| `homeassistant/sensor/+/quick/state` | 提供**存活证明**（非 retained，1 Hz） |
+
+只有同时出现在两边的设备才会进入下拉列表，所以已离线的微逆不会出现在检索结果里。
+`custom_value=True` 仍然保留，需要预建离线设备条目时仍可手填 SN。
+
+> 微储（`MSA-*`）不走这套逻辑，仍按原来的 retained 检索与 2 分钟 / 11 分钟窗口判定。
+
 ## 已知限制
 
 `RMI-1650A028FC22`（固件 `01.03.00`）**会**发布 `quick/state` 与 `device/state`，但内容比储能机（MSA）少得多：

@@ -19,6 +19,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import mqtt_util
 from .const import (
+    AVAILABILITY_STARTUP_GRACE_SECONDS,
     AVAILABILITY_WATCHDOG_SECONDS,
     DOMAIN,
     EMS_MODE_ECHO_GUARD_SECONDS,
@@ -103,6 +104,8 @@ class HoymilesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ems_mode_command_time = 0.0
         self._unsubscribes: list[Any] = []
         self._last_seen: dict[str, float] = {}
+        # When setup finished, so the ``None`` verdict below can expire.
+        self._startup_time = time.monotonic()
         # None = no verdict yet.  Staying available until proven silent keeps a
         # Home Assistant restart from blanking out every entity instantly.
         self._available: bool | None = None
@@ -762,10 +765,16 @@ class HoymilesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if last_seen is not None and (now - last_seen) <= window:
                 return True
 
-        # Never seen anything at all: leave the retained value alone instead of
-        # declaring a healthy device offline right after Home Assistant started.
+        # Never seen anything at all: leave the retained value alone for a while
+        # instead of declaring a healthy device offline right after Home
+        # Assistant started - the subscriptions are not even live yet.  The
+        # grace period is what keeps that from becoming permanent: a device that
+        # was already unplugged when Home Assistant started never publishes
+        # anything, so without it the stale retained ``online`` would stand.
         if not self._last_seen:
-            return None
+            if (now - self._startup_time) <= AVAILABILITY_STARTUP_GRACE_SECONDS:
+                return None
+            return False
 
         return False
 
