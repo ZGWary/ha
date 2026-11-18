@@ -54,6 +54,8 @@ from .const import (
     MANUFACTURER,
     PV_COUNT_MAX,
     ROLE_ALIASES,
+    ROLE_MASTER,
+    ROLE_SLAVE,
     ROLES,
     SRC_ALARM,
     SRC_DEVICE,
@@ -67,6 +69,7 @@ from .const import (
     TOU_DAY_ACK_STATUS,
     TOU_GET_STATUS,
     TOU_WEEK_ACK_STATUS,
+    is_inverter_dev_id,
 )
 from .coordinator import HoymilesCoordinator
 from .entity_gate import async_add_gated_entities
@@ -312,6 +315,61 @@ def pv_energy_total(field: str, default: Any = None) -> Callable[[dict], Any]:
         return default if total is None else total
 
     return _fn
+
+
+def _pv_power_sum(data: dict[str, Any]) -> Any:
+    """Sum the live power of **every** PV port the payload reports.
+
+    The Device tab draws one node per physical input, but the vendor app - and
+    therefore the number a user compares against - shows the array as a whole,
+    i.e. ``PV1 + PV2``.  This entity is that sum, so the card never has to add
+    up entities itself and a model with four inputs needs no special case.
+
+    It is a straight sum, with one measured caveat worth writing down: a
+    **single-input** body (``1650`` HiFlow 800, one MPPT) still publishes *both*
+    ``pv1_p`` and ``pv2_p`` in ``quick/state``, carrying the *same* number in
+    them frame for frame - measured over 45 s on three units (``4.8 / 4.8``,
+    ``4.3 / 4.3``, ``4.0 / 4.0``).  The firmware mirrors the one reading into
+    both fields rather than leaving the second empty.  Summing therefore doubles
+    that unit's wattage, which is what the vendor app does as well and what was
+    explicitly asked for here ("相加：永远显示 PV1+PV2"), so the dedupe that a
+    naive reading of the data would suggest is deliberately **not** applied.
+    A real multi-input body is unaffected: each port tracks its own string
+    (measured, ``RMI-4161A020A0F6`` ``14.8 / 14.5``; ``RMI-4162A0211FDE``
+    ``17.6 / 15.2 / 15.6 / 0.0``) and the sum is simply the whole array.
+
+    ``None`` when nothing reports a value at all, so the sensor stays ``unknown``
+    instead of claiming a hard ``0`` for a unit that has not spoken yet.
+    """
+    live = _payload(data, SRC_QUICK)
+    total = None
+    for port in range(1, PV_COUNT_MAX + 1):
+        value = live.get(f"pv{port}_p")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            value = live.get(f"pPv{port}")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        total = value if total is None else total + value
+
+    if total is not None:
+        return total
+
+    # No 1 s reading (an older firmware, or a payload that has not arrived
+    # yet): fall back to the 5 min ``pvs[]`` array, which carries the identical
+    # numbers one entry per port.
+    items = _payload(data, SRC_DEVICE).get("pvs")
+    if not isinstance(items, list):
+        return None
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("p")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        total = value if total is None else total + value
+
+    return total
 
 
 def s_or_pv(field: str, pv_field: str) -> Callable[[dict], Any]:
@@ -828,6 +886,18 @@ SENSOR_DESCRIPTIONS: tuple[HoymilesSensorDescription, ...] = (
     # own ``pv_num``, so a 2-input HiFlow Pro creates only PV1 / PV2.  The card
     # keeps working either way: it decides its layout from the serial's product
     # code as well, so removing the phantom ports does not change the drawing.
+    #
+    # ``pv_total_power`` is the sum over the ports that reported, which is the
+    # figure the Device tab prints on its single PV node and the one the vendor
+    # app shows for the array.  It is a separate entity rather than an addition
+    # in the card so that the value is also usable in automations and history
+    # charts, and so a 4-input body needs no per-model special case.  See
+    # ``_pv_power_sum`` for why a single-input unit legitimately counts its one
+    # MPPT twice here.
+    HoymilesSensorDescription(
+        key="pv_total_power", name="PV Total Power",
+        value_fn=_pv_power_sum, **_POWER
+    ),
     HoymilesSensorDescription(
         key="pv1_power", name="PV1 Power", value_fn=pv(0), pv_port=1, **_POWER
     ),
@@ -1054,6 +1124,9 @@ async def async_setup_entry(
         entities: list[Any] = list(_build())
         if coordinator.has_capability(CAP_ALARM_STATE):
             entities.append(HoymilesAlarmSensor(coordinator, dev_id))
+        # The installation wide 今日发电 figure.  Not a description: its value
+        # comes from other units' coordinators, not from this unit's payload.
+        entities.append(HoymilesPlantTodaySensor(coordinator, dev_id))
         return entities
 
     def _stale() -> set[str]:
@@ -1235,3 +1308,136 @@ class HoymilesAlarmSensor(
             "codes": [item["code"] for item in alarms],
             "summary": _alarm_summary(alarms),
         }
+
+
+class HoymilesPlantTodaySensor(CoordinatorEntity[HoymilesCoordinator], SensorEntity):
+    """Today's PV yield of the **whole installation**, not of one unit.
+
+    The firmware answers "how much did the roof make today" per unit: every
+    HiFlow publishes its own ``pvs[].ed`` (and the master, additionally, its
+    ``system/state``), and nothing anywhere in the protocol adds them up.  That
+    is measured, not assumed - the three units on the test installation report
+    387 Wh / 148 Wh / 613 Wh on the same afternoon, so the master's own figure
+    is its share, not the total.
+
+    Because the dashboard's System tab describes the installation, its 今日发电
+    gauge has to show the total, which means this integration has to do the
+    adding.  The grouping comes from protocol §32 「状态事件」, the only place
+    the firmware states its role: members are the master and every unit that
+    announced ``role: slave``.  The protocol carries **no** plant / station /
+    parent identifier at all (verified by dumping the retained ``event/state``
+    of all six units - the payload holds ``role``, ``switch`` and
+    ``output_power``, plus ``ems_mode`` / ``has_meter`` / ``has_plug`` on a
+    master, and nothing else), so "the same installation" can only mean "the
+    master and its followers".  Two independent installations under one Home
+    Assistant would therefore each count every follower; the alternative - a
+    user-configured grouping - would be a real feature, and this is not the
+    place to invent it.
+
+    A unit that is not a master answers with just its own figure, which is the
+    truthful answer for a standalone ("single") unit and a partial one for a
+    follower that somehow renders the System tab.
+
+    Reads the other units' coordinators directly rather than their entities: the
+    coordinator is the source those entities are built from, so this cannot
+    depend on the entity registry being populated yet, and it cannot be confused
+    by a user who renamed ``sensor.<slug>_system_pv_energy_today``.
+    """
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_name = "Plant PV Energy Today"
+
+    def __init__(self, coordinator: HoymilesCoordinator, dev_id: str) -> None:
+        super().__init__(coordinator)
+        self._dev_id = dev_id
+        self._attr_unique_id = f"{DOMAIN}_{dev_id}_plant_pv_energy_today"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, dev_id)},
+            name=dev_id,
+            manufacturer=MANUFACTURER,
+            model=coordinator.device_model,
+        )
+
+    @property
+    def available(self) -> bool:
+        """Yes while this unit talks; the followers are reported separately."""
+        return self.coordinator.available
+
+    @property
+    def native_value(self) -> float | None:
+        """``master + followers`` in Wh, or just this unit when it is not one."""
+        own = _today_of(self.coordinator)
+        if self.coordinator.role != ROLE_MASTER:
+            return own
+
+        total: float | None = None
+        for dev_id, other in _inverter_coordinators(self.hass):
+            if dev_id == self._dev_id:
+                value = own
+            elif other.role == ROLE_SLAVE:
+                value = _today_of(other)
+            else:
+                continue
+            if value is None:
+                continue
+            total = value if total is None else total + value
+        return total
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Which units were added up, so the number can be checked.
+
+        An aggregated figure with no way to see its parts is the kind of thing
+        that gets distrusted and then hard-coded around.  The list is also what
+        reveals the grouping rule's limit: a second installation's followers
+        would appear here too.
+        """
+        members: list[str] = []
+        own = _today_of(self.coordinator)
+        for dev_id, other in _inverter_coordinators(self.hass):
+            if dev_id == self._dev_id or other.role == ROLE_SLAVE:
+                members.append(dev_id)
+        return {
+            "role": self.coordinator.role,
+            "members": sorted(members),
+            "own": own,
+            "grouping": "master + role=slave units",
+        }
+
+
+def _today_of(coordinator: HoymilesCoordinator) -> float | None:
+    """Today's PV energy of one unit, by the same rule its own sensor uses."""
+    value = s_or_pv("pv_e", "ed")(coordinator.data or {})
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _inverter_coordinators(
+    hass: HomeAssistant | None,
+) -> list[tuple[str, HoymilesCoordinator]]:
+    """Every micro-inverter coordinator this integration has set up.
+
+    ``hass.data[DOMAIN]`` holds one entry per config entry and both product
+    families share the key, so the serial's PID decides which is which.  A
+    storage unit is never a candidate: it has its own battery-side totals and no
+    ``role`` at all.
+    """
+    if hass is None:
+        return []
+    found: list[tuple[str, HoymilesCoordinator]] = []
+    for entry_data in (hass.data.get(DOMAIN) or {}).values():
+        if not isinstance(entry_data, dict):
+            continue
+        coordinator = entry_data.get("coordinator")
+        dev_id = entry_data.get("dev_id")
+        if not isinstance(dev_id, str) or coordinator is None:
+            continue
+        if not is_inverter_dev_id(dev_id):
+            continue
+        found.append((dev_id, coordinator))
+    return found

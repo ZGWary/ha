@@ -16,7 +16,7 @@
 | `mqtt_util.py` | `async_discover_dev_ids()` 按 PID 过滤发现主题（不看前缀），返回带前缀的完整 `dev_id` |
 | `config_flow.py`（父包） | 选项流程按 PID 分派到 `inverter/options_flow.py`；配置流程本身不校验 PID，任何序列号都接受 |
 | `coordinator.py` | `capabilities` / `has_capability()` / `capabilities_known`、三级推导的 `pv_count`、`_ems_mode_value()` 双源读取、`set_keepalive_state()` |
-| `sensor.py` | 逐口实体按 `pv_port` 门控、`requires_absent` 反向门控、`pv()` 优先读 1 秒 `quick/state` 的 `pv<n>_p`（兼容 `pPv<n>`）、`grid_port()` 优先读 1 秒 `grid_on_p`（兼容 `pAc`）、`pv_energy*` 从 `pvs[]` 求和、`HoymilesAlarmSensor` 与告警解码、`_async_prune_stale_entities()` 清理过时实体 |
+| `sensor.py` | 逐口实体按 `pv_port` 门控、`requires_absent` 反向门控、`pv()` 优先读 1 秒 `quick/state` 的 `pv<n>_p`（兼容 `pPv<n>`）、`grid_port()` 优先读 1 秒 `grid_on_p`（兼容 `pAc`）、`pv_energy*` 从 `pvs[]` 求和、`pv_total_power`（`_pv_power_sum`，各口**纯相加**不去重）、`plant_pv_energy_today`（`HoymilesPlantTodaySensor`，master + `role=slave` 求和）、`HoymilesAlarmSensor` 与告警解码、`_async_prune_stale_entities()` 清理过时实体 |
 | `discovery_override.py` | `on_object` 回调上报 `phase_output_power` 能力 |
 | `number.py` / `binary_sensor.py` / `services.py` | 功率控制、keep-alive 服务与相关实体。子包的 `services.py` **只注册 4 个独有服务**（`start_power_ctrl_keepalive` / `stop_power_ctrl_keepalive` / `get_optional_charts` / `set_optional_charts`）；`set_tou_*`、`get_tou_plan`、`set_ems_mode`、`set_phase_output_power`、`reboot` 仍由父包注册，避免重复注册覆盖储能处理器 |
 | `__init__.py`（子包） | `async_setup_inverter_entry()` / `async_unload_inverter_entry()`：协调器、能力补丁、keep-alive、前端静态路由、服务与仪表盘；前端与服务的注册哨兵分别是 `_inverter_frontend_registered` / `_inverter_services_registered`，与储能互不覆盖 |
@@ -25,13 +25,14 @@
 
 | 文件 | 改动 |
 | --- | --- |
-| `lovelace.py` | 自动生成三视图仪表盘（System / Device / Control）、`_LAYOUT_KEY` 版本化布局 `_LAYOUT_VERSION = 22` 与逐版迁移链、`_alarm_entity_id()` / `_resolve_entity()` 按 `unique_id` 解析实体、并排布局常量 `_FLOW_COLUMNS = 24` / `_ALARM_COLUMNS = 24` / `_SECTION_COLUMNS = 48` / `_DEVICE_FLOW_MAX_WIDTH = 0`（0 = 不设像素上限，占整行时由卡片钉在半行宽度）、可选曲线卡片的增删（`OPTIONAL_CHARTS` / `async_get_optional_charts()` / `async_set_optional_charts()`）、device 视图里的「更多数据」开关卡片（`CHART_OPTIONS_CARD`） |
+| `lovelace.py` | 自动生成三视图仪表盘（System / Device / Control）、`_LAYOUT_KEY` 版本化布局 `_LAYOUT_VERSION = 23` 与逐版迁移链（23 号一次带上 `inverter-system` variant、`system_plug_power`、`plant_pv_energy_today` 三件事，由 `_migrate_plant_view()` 幂等改写已落盘的旧配置）、`_alarm_entity_id()` / `_resolve_entity()` 按 `unique_id` 解析实体、并排布局常量 `_FLOW_COLUMNS = 24` / `_ALARM_COLUMNS = 24` / `_SECTION_COLUMNS = 48` / `_DEVICE_FLOW_MAX_WIDTH = 0`（0 = 不设像素上限，占整行时由卡片钉在半行宽度）、可选曲线卡片的增删（`OPTIONAL_CHARTS` / `async_get_optional_charts()` / `async_set_optional_charts()`）、device 视图里的「更多数据」开关卡片（`CHART_OPTIONS_CARD`） |
 | `options_flow.py` | 选项菜单新增「可选的设备曲线卡片」步骤（`async_step_charts`），按设备 dashboard 现状预选勾选框 |
 | `www/hoymiles-g2-alarm.js` | 告警卡片：列表渲染（名称**中英双语**，按界面语言决定主次）、四种状态分支（不可用 / 尚未收到 / 无告警 / 有告警）、`only_when_alarm`（无告警时整卡隐藏且 `getCardSize()` 返回 0，把行让给旁边的功率流图） |
 | `www/hoymiles-g2-battery.js` | 微逆模式：设备识别、`_isMicroInverter()`、`_microInverterBody()`、样式 |
-| `www/hoymiles-g2-power-flow.js` | 微逆布局 `variant: inverter`：只画光伏 + 并网端口，中间放产品图；`alarm_entity` 在画布左上角画健康徽标（无告警绿圈对勾 / 有告警**实心红三角感叹号**，与厂商 G3 仪表盘一致），并在告警卡隐藏时由 `_syncRowSpan()` 经 `_gridItem()` 找到真正带 `grid-column` 的那层祖先、把它撑成 `1 / -1`（`0` 与「未知」都撑，因为 `only_when_alarm` 两种情况都不显示），同时由 `_wrapStyle()` 把插图钉在半行宽度上、居中，保证两种状态下**卡片高度一致**（宽度变、高度不变）；`max_width: 0` 表示不设像素上限，半行时 `max-width:none`、整行时取实测的半行宽度 |
-| `www/hoymiles-g2-history-chart.js` | 单调三次曲线平滑、**左边缘**从 0 线斜坡升起（`baseAt()` 锚点，右边缘不补——窗口右侧还在继续补充数据）、滚轮以光标位置为锚缩放横轴 / 拖动平移 / 双击复位（**仅曲线模式**，柱状图不缩放：30 根柱缩小后只剩四根，比较就没了）、默认从 0 点开始、载入时曲线从 0 线「长出来」（`_playGrow()`，30 秒自动刷新不重放）；`mode`（`auto`/`bar`/`line`）+ `scale` 让月/年电量画成**柱状图**，`show_totals` 在顶部显示「合计」并在图下排出月/年/总发电量三块小卡；`since` **只裁剪数据不缩横轴**；缺失的时间段补成 0（`_filledTimes()`，电量与 `%` 保持前值），且虚线光标指不进去（`holes`） |
-| `www/hoymiles-g2-gauge.js` / `hoymiles-g2-history-chart.js` / `hoymiles-g2-energy-sankey.js` / `hoymiles-g2-control.js` / `hoymiles-g2-tou-editor.js` / `hoymiles-g2-pack-list.js` | 各卡片按能力/机型自适应 |
+| `www/hoymiles-g2-power-flow.js` | 微逆设备布局 `variant: inverter`：只画光伏 + 并网端口，中间放产品图；单口机型（`pvCount === 1`）的 PV 节点读 `pv_total_power`。系统布局 `variant: inverter-system`（`_isInverterSystem()`）三处不同：**不画光伏2**、`sys_load_p < 0` 时把负载瓦数并进光伏并去掉负载节点、节点标签移到环上方（`node(..., above)`）。`system` 视图的光伏读数优先取 `system_plug_power`（交流侧）而非 `system_pv_power`（直流侧）。`alarm_entity` 在画布左上角画健康徽标（无告警绿圈对勾 / 有告警**实心红三角感叹号**，与厂商 G3 仪表盘一致），并在告警卡隐藏时由 `_syncRowSpan()` 经 `_gridItem()` 找到真正带 `grid-column` 的那层祖先、把它撑成 `1 / -1`（`0` 与「未知」都撑，因为 `only_when_alarm` 两种情况都不显示），同时由 `_wrapStyle()` 把插图钉在半行宽度上、居中，保证两种状态下**卡片高度一致**（宽度变、高度不变）；`max_width: 0` 表示不设像素上限，半行时 `max-width:none`、整行时取实测的半行宽度 |
+| `www/hoymiles-g2-history-chart.js` | 单调三次曲线平滑、**左边缘**从 0 线斜坡升起（`baseAt()` 锚点，右边缘不补——窗口右侧还在继续补充数据）、滚轮以光标位置为锚缩放横轴 / 拖动平移 / 双击复位（**仅曲线模式**，柱状图不缩放：30 根柱缩小后只剩四根，比较就没了）、默认从 0 点开始、载入时曲线从 0 线「长出来」（`_playGrow()`，30 秒自动刷新不重放）；`mode`（`auto`/`bar`/`line`）+ `scale` 让月/年电量画成**柱状图**，`show_totals` 在顶部显示「合计」并在图下排出月/年/总发电量三块小卡；`since` **只裁剪数据不缩横轴**；缺失的时间段补成 0（`_filledTimes()`，电量与 `%` 保持前值），且虚线光标指不进去（`holes`）；**恒为 0 的曲线仍画线**（`flat` 只跳过面积填充，stroke 无条件绘制，轴兜底到 `0..1`） |
+| `www/hoymiles-g2-control.js` | `_powerRange()`：滑条上界跟随主机上报的 `output_power` `max`（实测 master 声明 `min 100 / max 6000`），`RATED_W_BY_PID`（`1650 → 800`、`4161 → 1000`、`4162 → 2000`）降级为**型号未知时的退路**；下界仍取 `power_ctrl` 的 `min` |
+| `www/hoymiles-g2-gauge.js` / `hoymiles-g2-energy-sankey.js` / `hoymiles-g2-tou-editor.js` / `hoymiles-g2-pack-list.js` | 各卡片按能力/机型自适应 |
 
 ### 产品图
 
@@ -68,10 +69,29 @@
 
 这张卡片有两套画法，**由 `variant` 显式选择，不自动识别机型**：
 
-- 默认（`variant` 留空）→ 四支路储能示意图。`system` 视图一直用这套，**不受影响**。
-- `variant: inverter` → 微逆画法：产品图居中，**并网端口在右上**，PV 节点沿下方一行排开、**按机身上的接插件实际位置**接到左右两侧（与官方 App 一致）；没有电池 / 负载 / 智能插座 / 离网端口。
+- 默认（`variant` 留空）→ 四支路储能示意图。
+- `variant: inverter` → 微逆**设备**画法：产品图居中，**并网端口在右上**，PV 节点沿下方一行排开、**按机身上的接插件实际位置**接到左右两侧（与官方 App 一致）；没有电池 / 负载 / 智能插座 / 离网端口。
+- `variant: inverter-system` → 微逆**系统**画法（见下）。
 
 > 之所以不做自动识别：同一张卡片既用于储能机的 `system` 视图，也用于微逆的 `system` 视图（RMI 同样有 `sys_pv_p` / `sys_grid_p`），若靠 `RMI-` 前缀自动切换，`system` 视图也会一起被改掉。
+
+#### `variant: inverter-system`：`system` 视图与 `device` 视图的三点差异
+
+微逆的 `system` 视图展示的是**整个电站**，但操作者只有主人的一只电表视角，所以它的画法不能照抄 `device` 视图。三点差异全部集中在 `_isInverterSystem()` 这一个判断上：
+
+1. **没有「光伏2」。** `device` 视图按机身上的输入路数画 `PV1` / `PV2`（`4161` 两口、`4162` 四口）。`system` 视图站在电表这一侧，看到的是一台整体的发电体，画两路光伏既没有对应的测量值（电站级只有一个 `sys_plug_p`），也会让人误以为系统里有两块光伏。因此 PV 节点只有一个、标签写「光伏」（不是「光伏1」），`routes` 里的 `pv2` 走条件展开直接不生成。
+2. **负载为负时把数值并进光伏。** 电站级 `sys_load_p` 为负意味着电表看到的「负载」其实是往外送，此时再单独画一个负的负载节点，读数会自相矛盾（光伏 100 W、负载 −40 W、电网却有 140 W）。所以 `sys_load_p < 0` 时：负载节点整个不画，光伏节点的读数改成 `pv + |load|`。**连线（trunk）故意不改**——`pv` 那条支路仍然按原样的光伏值决定珠子方向与大小，几何形状保持一致，只有标签上的数字变了。
+3. **标签移到环的上方。** `system` 画法的光伏 / 电网节点紧贴画布上沿，标签放下面会压到连线和产品图。`_nodes()` 的 `node()` 因此多了一个 `above` 参数（`vy = -(NODE_R+28)` / `cy = -(NODE_R+48)`），由调用方按是否 `inverter-system` 决定。
+
+> `_build_storage_views()` 从不设置这个键，所以储能视图**逐像素不变**。`_signature()` 里也把它算进了缓存键（紧跟 `_isMicroInverter()` 之后），否则同一个 `dev_id` 的两个 variant 会互相复用对方的布局。
+
+#### `system` 视图的光伏读数取 `sys_plug_p`，不取 `sys_pv_p`
+
+`system` 视图的那条「光伏」读数和功率曲线走 `sys_plug_p`（即 `sensor.<dev>_system_plug_power`），而 `device` 视图仍用 `sys_pv_p`（`_system_pv_power`）。
+
+原因是这两个数**量的不是同一个位置**：`sys_pv_p` 是直流侧（组件进机的功率），`sys_plug_p` 是交流侧（机子真正送出、电表能看到的那一份）。实测同一时刻 `sys_pv_p = 133.3 W` 而 `sys_plug_p = 100.6 W`，差的那 30 多瓦是逆变损耗。`system` 视图讲的是「这个电站给电网/负载贡献了多少」，站在电表侧，必须用交流读数，否则系统图上光伏 133 W、电网 100 W、负载 80 W 三者对不上，看的人会以为丢了一条支路。
+
+仪表盘侧的对应改动在 `lovelace.py` 的 `pv_series`（实体由 `system_pv_power` 改为 `system_plug_power`），`power-flow.js` 的 `_data()` 同步优先读 `system_plug_power`，读不到才回退 `system_pv_power` / `pv1_power`。
 
 ```yaml
 # 微逆的 device 视图
@@ -82,6 +102,16 @@
   title: 我的家
   show_title: false
   max_width: 0
+```
+
+```yaml
+# 微逆的 system 视图（仪表盘自动生成时已带上 variant）
+- type: custom:hoymiles-g2-power-flow
+  dev_id: RMI-4161A020A04A
+  variant: inverter-system
+  title: 我的家
+  show_title: false
+  max_width: 700
 ```
 
 > `max_width: 0` 表示**不设像素上限**：正数仍然当作像素上限，省略则用默认 620 px。Device 视图的流图写的就是 `0`（由 `_DEVICE_FLOW_MAX_WIDTH = 0` 下传）。
@@ -168,6 +198,9 @@
   - **默认降到 0**：功率、电压、电流、频率、无功这些“瞬时测量”在设备离线时不该有值，画 0 才是“没有数据”，一眼能看出断档；
   - **电量与百分比保持前值**：电量是终身累加量，离线期间发的电仍然记在表里，掉到 0 再爬回来等于画了一次“表底清零”；`%`（SOC）同理，0 % 会被读成“电池空了”。
   两个边界：第一点之前的空缺不补（那时连“前值”都没有，属于未知而不是 0）；只在尾段超过两个桶时才补，否则健康设备那个还在累积的当前桶每 5 分钟就会被画成 0 一次。
+- **恒为 0 的序列也要画出一条线**。旧实现在曲线模式下遇到「整条序列的每个采样都落在基线上」会直接 `continue`，跳过这条序列的绘制。这样处理的原意是不给「全 0」画一条毫无信息量的线，但结果更糟：`sensor.<dev>_grid_port_power` 在 1650 上恒为 0（`grid_on_p` 实测一直是 `0.0`），这台设备的「各光伏端口功率」「电网电压」等卡片就整片空白，和图例上明明列着的系列对不上——看上去像卡片加载失败，而不是「读数是 0」。
+  现在的做法是：`flat` 仍然算出来，但**只用来跳过面积填充**（那块填充的高度是 0，画出来只是一条和零线重叠的细条），stroke 路径**无条件绘制**，于是全 0 序列在零基线上画出它自己的细线。轴的范围也跟着兜底：`niceMax(max <= 0 ? 1 : max)`，零值不会把纵轴压成 `0..0`；非 symmetric 分支用 `niceStep(Math.max(max, 1e-9) / 4) * 4`。
+  **柱状图分支不受影响**：柱状图里「缺失」就是高度为 0 的柱子本身（`isBar` 分支仍有 `if (Math.abs(value) < 1e-9) continue;`），没有「一条看不见的线」这个问题。
 - **虚线光标指不进空洞**（`_build()` 返回的 `holes` 数组）。把缺失桶补成 0 是“如实”，但浮窗把一个补出来的 0 说成一次读数就是撒谎——所以 `holes[i]` 为真的桶既不接受悬停（`_hoverPosition()` 两条路径都返回 `null`），也不会被 `_onMove()` 的最近点吸附：指针落进空洞时 `_setHover(-1)`，连同步组的虚线一起清掉。曲线掉到 0 让人看见断电，浮窗则安静。判断“空洞”要求**所有系列**在该桶都没有数据，多系列卡片只要还有一条在报就不算缺。
 - **柱状图没有空洞概念**：柱子的“缺失”是高度为 0 的柱子本身，`holes` 在 bar 模式下直接为 `null`。
 
@@ -396,6 +429,36 @@ SOURCE_STALE_SECONDS = {SRC_QUICK: 60}
 
 `grid_port_power` 以 `requires_absent=CAP_SYSTEM_STATE` 门控：储能机用 `grid_on_power` 描述同一个端口，若不加区分会出现两个重复实体。
 
+### `pv_total_power`：永远相加，不做去重
+
+单输入机型需要一个「这台机器一共发多少」的读数，于是新增 `sensor.<dev>_pv_total_power`（`_pv_power_sum`）。
+
+取法是**纯相加**：先读 `quick/state` 里存在的 `pv1_p` / `pv2_p` / `pv3_p` / `pv4_p`（同时接受协议文档的 `pPv<n>` 拼写），一个都没有才回退到 `device/state` 的 `pvs[].p` 求和；两种来源都为空时返回 `None`（实体显示 `unknown`），**从不**填 0。
+
+> 1650（一拖一）固件把**同一路**读数同时发进 `pv1_p` 与 `pv2_p`：三台 1650 各观察 45 秒，逐帧两字段**完全相等**（`4.8/4.8`、`4.3/4.3`、`4.0/4.0`）。因此 `pv_total_power` 在这些机型上等于真实功率的**两倍**。
+>
+> 这是刻意的。曾考虑「两值相等则去重」，被明确放弃：镜像只是 1650 的当前实现细节，去重会把「两块完全相同的光伏板」这种**真实**情况也算错，而且会让实体语义随机型漂移——同一个实体在 4161/4162 上不相加就说不通。**口径统一为相加**，界面上的总量口径也因此可预期：卡片只拿这一个数字，不再自己判断机型。
+
+仪表盘只在**单口机型**用它：`_build_inverter_views` 的 `port_series` 在 `ports == 1` 时指向 `pv_total_power`，否则仍是逐口 `pv<n>_power`。微逆 `device` 视图的 PV 节点（`_inverterNodes`）同理：`pvCount === 1` 时取 `d.pvTotal ?? d.pvPorts[i]`。
+
+### `plant_pv_energy_today`：master + slave 的电站级今日发电
+
+System 视图的「今日发电」原先是 `system_pv_energy_today`，但那是**单机**口径：实测主机 387 Wh、1650A02ABA09 148 Wh、4162A0211FDE 613 Wh，主机报的只是它自己。而 `system` 视图展示的是整个电站。
+
+固件层面拿不到电站总量。**`event/state` 的保留报文里没有任何电站/从机列表字段**——六台设备的全集只有 `role` / `switch` / `output_power`（master 另有 `ems_mode` / `has_meter` / `has_plug`）。既然设备侧不告诉邻居有谁，分组只能按主从关系推：**同一个电站 = 一台 master + 挂在它下面的所有 slave**。
+
+`HoymilesPlantTodaySensor` 因此这样算：
+
+- 自身 `_today_of(coordinator)` = `pv_e`（无 `system/state` 时回退 `pvs[].ed` 求和）。
+- 非 `ROLE_MASTER` 直接返回自身值（从机的「电站」就是它自己）。
+- 是 `ROLE_MASTER` 时遍历 `hass.data[DOMAIN]` 里所有**微逆**协调器（`is_inverter_dev_id` 过滤，储能机不参与）：自己用自身值，`role == ROLE_SLAVE` 的用对方的 `_today_of`，其余跳过；`None` 不累加。
+
+实测主机 442 + 1650 的 148 + 4162 的 703 = **1293 Wh**，与三台 `plant_pv_energy_today` 的输出一致。
+
+`extra_state_attributes` 暴露排查用的三个字段：`role`、`members`（参与求和的 dev_id 列表）、`own`（自身那台的值），以及固定说明 `grouping: "master + role=slave units"`。从机的 `members` 只有两台（自己和同级的另一台从机），因为它不是 master——这正好反过来验证了分组依据。
+
+`device` 视图**仍用**单机口径的 `system_pv_energy_today`：那一页讲的就是这一台机器。
+
 ### 设备角色：`event/state` 的 `role` 决定标题标记与 `device` 视图
 
 协议 §32「状态事件」是唯一说明**本机在系统中处于什么位置**的地方，主题为 `homeassistant/sensor/{dev_id}/event/state`，qos 1、retained。
@@ -543,13 +606,11 @@ SOURCE_STALE_SECONDS = {SRC_QUICK: 60}
 
 由此带来两个必须由卡片处理的问题，否则界面看起来像坏了：
 
-1. **滑条范围不能取 `power_ctrl` 声明的 `max`。** 否则设备被限制在 132 W 时，用户连「发 300 W」都做不到，而固件其实是接受的。**但也不能取 `output_power` 声明的 `max`**（早期版本这么做过，是错的）：主机（`role = master`）在 `output_power` 与 `power_ctrl` 两个主题上报的都是**整个系统**的合计能力，不是单机能力。实测 `RMI-4161A0209FF6`（额定 1000 W）在两个主题上都报 `max = 3000`，而同一序列号在旧的 `MI-` 前缀下报的是 `0 ~ 1000`；从机（`role = slave`）干脆不发任何 `number` 发现对象。滑条上界因此取**型号额定单机功率**（卡片内置表：`1650 → 800`、`4161 → 1000`、`4162 → 2000`），只有型号未知时才回退到声明的 `max`；下界仍取 `power_ctrl` 声明的 `min`（微逆 0，储能机为负）。
+1. **滑条范围取 `output_power` 声明的 `max`，型号额定值只作退路。** 不取 `power_ctrl` 的 `max`（它是瞬时租约上界，FC22 声明过 132，实际能做 800 W，照抄会让滑条只有 0–132）；而当机型未知、`output_power` 也没有可用声明时，才回退到型号额定单机功率（卡片内置表：`1650 → 800`、`4161 → 1000`、`4162 → 2000`）。下界仍取 `power_ctrl` 声明的 `min`（微逆 0，储能机为负）。
 
-   反例就是本次修复的现场：9FF6 与 BFB5 同处一个系统，两台合计能发 3000 W，于是主机 9FF6 的滑条曾给出 `0 ~ 3000`（单机只能发 1000 W），从机 BFB5 的滑条因读不到声明范围而退化成 `-1000 ~ 0`。修复后两者分别为 `0 ~ 1000` 与 `0 ~ 2000`，且各自按正常正值下发。
+   > 早期版本曾经相反：上界一律取型号额定值，理由是「主机在两个主题上报的是整个系统合计能力，不是单机能力」。实测推翻了这条理由。当前主机 `RMI-4161A020A04A`（额定 1000 W）的 `power_ctrl` 声明为 `min 0 / max 100 / step 0.1`，`output_power` 声明为 `min 100 / max 6000 / step 1`——**`output_power` 的 `max` 才是主机愿意接受的输出上限**，而型号额定 1000 W 反而比它窄得多，按额定值截断会白白丢掉 5 kW 的可用幅度。所以现在的口径是：**跟随主机上报，额定值只兜底。**
 
-   注意「输出功率」那一行**仍然**按 `output_power` 声明的范围渲染（9FF6 上是 `100 ~ 3000`）：主机上的它确实作用于整个系统，收窄会拿掉唯一能设置系统总功率的入口。只有 `power_ctrl` 是单机租约，不能继承这个合计值。
-
-   `power_ctrl` 声明的 `max` 也不能当作能力上限——它是**瞬时**限制（FC22 当前声明 132，实际能做 800 W）。
+   注意「输出功率」那一行同样按 `output_power` 声明的范围渲染，这两行的上界因此在主机上是一致的（都来自 `output_power` 的 `max`）。区别只在 `power_ctrl` 的下界可以到 0。
 2. **有效上限必须读 discovery 声明的属性，不能读 `output_power` 实体的 state。** 该实体只有 `command_topic`、没有 `state_topic`，state 只是 HA 最后一次下发的值，会立刻过期。
 
 集成本身不去改写固件声明的范围（`discovery_override.py` 里 `number/{dev}/power_ctrl` 与 `output_power` 都走 `_patch_plain`，原样透传），所以这些数字一定来自设备。步进同样跟随声明：微逆 1 W，储能机 0.1 W。
@@ -741,8 +802,8 @@ power_ctrl, quick_state, reboot, reset_ble_pin_code, switch_ctrl
 
 | 视图 | 内容 |
 | --- | --- |
-| System | 全宽功率流、今日发电 + 累计发电仪表、功率历史曲线（PV / 电网 / 负载）、发电量柱状图（日/月/年 + 三个统计笉片） |
-| Device | 无告警时：功率流横跨整行（不设宽度上限，按卡片宽度等比放大）；有告警时：功率流（24 列）+ 告警卡（24 列）各占半行。其下是各光伏端口功率、电网电压 + 今日发电量 |
+| System | 全宽功率流（`variant: inverter-system`）、今日发电（`plant_pv_energy_today`，**电站级**：master + slave 求和）+ 累计发电仪表、功率历史曲线（PV / 电网 / 负载）、发电量柱状图（日/月/年 + 三个统计笉片） |
+| Device | 无告警时：功率流横跨整行（不设宽度上限，按卡片宽度等比放大）；有告警时：功率流（24 列）+ 告警卡（24 列）各占半行。其下是各光伏端口功率（单口机型为 `pv_total_power`）、电网电压 + 今日发电量（**单机**口径的 `system_pv_energy_today`） |
 | Control | 功率控制卡、keep-alive 状态（从机上只剩部分分组，见 rev.17） |
 
 Device 视图首行刻意让两张卡是**同一个 `_grid()` 内的兄弟卡**：嵌套 `grid` 卡会强制等分，而两个独立 section 在 `max_columns` 生效后会上下堆叠。24 + 24 = 48 正好等于一个 `column_span: 4` section 的实测列数（实测：section 宽 1354 px，48 列、列宽 20.375 px、列间隙 8 px）。
@@ -757,7 +818,11 @@ Device 视图首行刻意让两张卡是**同一个 `_grid()` 内的兄弟卡**�
 
 ### System 视图的三条曲线是**三条独立测量**，不是拆开的同一个总量
 
-「光伏功率 / 电网 / 负载」这三条序列分别来自 `sensor.<dev>_system_pv_power`、`_system_grid_power`、`_system_load_power`，也就是 1 秒 `quick/state` 里的 `sys_pv_p` / `sys_grid_p` / `sys_load_p` —— **设备原样上报，卡片不参与任何运算**。它们分别单独测量、单独上报，所以：
+「光伏功率 / 电网 / 负载」这三条序列分别来自 `sensor.<dev>_system_plug_power`、`_system_grid_power`、`_system_load_power`，也就是 1 秒 `quick/state` 里的 `sys_plug_p` / `sys_grid_p` / `sys_load_p` —— **设备原样上报，卡片不参与任何运算**。
+
+> 光伏那条用的是 `sys_plug_p`（**交流侧**），不是 `sys_pv_p`（直流侧）。两者差在逆变损耗上，实测同一时刻 `133.3 W` vs `100.6 W`。系统视图站在电表这一侧，必须与电网/负载同一口径，否则三者在图上对不上。详见上文「`system` 视图的光伏读数取 `sys_plug_p`」。`device` 视图仍用 `sys_pv_p`。
+
+它们分别单独测量、单独上报，所以：
 
 - 三条曲线的**高度不会相加成一个数**，`_history()` 因此显式写了 `stack=False`（堆叠意味着「加起来是总量」，这三个不是）。
 - 同一时刻 `光伏 − 电网 = 负载` **不一定精确成立**。差值来自三处：三个量各自的采样/上报时刻相差几十到几百毫秒（历史图按 recorder 的统计桶对齐，缺失点从前一个桶**前向填充**，见 `_build()`）；设备自身的自耗电与变换损耗不被 `sys_load_p` 计入；以及电表与逆变器各自的计量误差。
@@ -765,12 +830,22 @@ Device 视图首行刻意让两张卡是**同一个 `_grid()` 内的兄弟卡**�
 
 ### 布局版本与迁移
 
-存储里带一个 `g2_layout` 版本标记（键为 `_LAYOUT_KEY`，当前 `_LAYOUT_VERSION = 22`）。规则：
+存储里带一个 `g2_layout` 版本标记（键为 `_LAYOUT_KEY`，当前 `_LAYOUT_VERSION = 23`）。规则：
 
 - **新设备**：直接以当前版本落盘，**不跑迁移**。
-- **已存在的设备**：每次集成加载时按版本链逐项修补（`_migrate_axis_cards` → `_migrate_control_cards` → `_migrate_energy_total_card` → `_migrate_device_alarm_card` → `_migrate_device_alarm_columns` → `_migrate_device_drop_total_power` → `_migrate_system_energy_chart` → …），修完写回当前版本。
+- **已存在的设备**：每次集成加载时按版本链逐项修补（`_migrate_axis_cards` → `_migrate_control_cards` → `_migrate_energy_total_card` → `_migrate_device_alarm_card` → `_migrate_device_alarm_columns` → `_migrate_device_drop_total_power` → `_migrate_system_energy_chart` → … → `_migrate_plant_view`），修完写回当前版本。
 - 迁移**只改集成自己生成过的值**：用户选的 `max_width`、手挑的告警实体、重命名的视图、手动添加的卡片都保留。`_migrate_device_alarm_columns()` 仅把集成历史上写过的 `380 / 640 / 700 / 1100` 这几种 `max_width` 改成当前值 `0`，别的数字（用户自己填的）一律不动。
 - 每个仪表盘每进程只检查一次（`_LAYOUT_CHECKED`），因为 `LovelaceStorage` 会缓存配置在内存里。
+
+**23 号版本一次性带上三件事**，`_migrate_plant_view()` 负责把已经落盘的旧配置改过来（只处理微逆、只遍历 `path == "system"` 的视图、每步独立幂等）：
+
+| 改写 | 从 | 到 | 作用 |
+| --- | --- | --- | --- |
+| Power Flow 卡片 | `variant` 缺失或空 | `inverter-system` | `system` 视图不再画光伏2、负负载并进光伏、标签上移 |
+| 功率曲线系列 | `system_pv_power` | `system_plug_power` | 改用交流侧读数（更接近电表看到的） |
+| 今日发电仪表 | `system_pv_energy_today` | `plant_pv_energy_today` | 从单机口径改为电站级（master + slave） |
+
+`variant` 一步只匹配 `dev_id` 相同且 `variant in (None, "")` 的卡片，因此用户手动改成 `inverter` 或别的值不会被覆盖。
 
 ### 新设备为何能自动得到同一套配置
 

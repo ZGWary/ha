@@ -1606,6 +1606,11 @@ function _hmPowerFlowRegister() {
            config value — is the key, because with no `image` configured the
            artwork follows the SKU, and two SKUs can share a port count. */
         this._isMicroInverter() ? "inv" : "sys",
+        /* A micro inverter's system view drops a branch (`inverter-system`), so
+           the two flavours of the schematic have to be distinguishable in the
+           rebuild key as well - otherwise switching a card between them would
+           keep the old SVG. */
+        this._isInverterSystem(),
         this._productImage(), this._config.dim_when_idle,
         /* Whether the inverter layout draws the 并网端口 node is a config
            decision, so toggling it has to rebuild the SVG.  The node is on
@@ -1886,15 +1891,33 @@ function _hmPowerFlowRegister() {
       // dashes; a master or a single unit never reaches these fallbacks because
       // its system level values are present.
       const ev = this._eventInfo();
-      /* 光伏1 is **the generation of the devices in this system**, i.e. the
-         firmware's own `sys_pv_p` aggregate.  The fallback to this unit's own
-         `pv1_power` is kept, and only this one: a slave publishes no system
-         level figures at all, and that unit *is* a device in the system, so its
-         own first input is a true (if partial) sample of the same quantity - the
-         same kind of number, measured smaller.  It never turns into a different
-         concept. */
-      const pv = this._read("system_pv_power", null)
-        ?? this._read("pv1_power", null);
+      /* 光伏1 is **the generation of the devices in this system**.  There are
+         two candidate fields and they measure different ends of the same wire:
+         `sys_pv_p` (`system_pv_power`) is the DC side - what the panels fed
+         *into* the units - while `sys_plug_p` (`system_plug_power`) is what the
+         installation delivered at its AC terminals.  Measured on the same
+         second, `sys_pv_p` 133.3 W against `sys_plug_p` 100.6 W, the difference
+         being the units' own conversion and standby losses.
+
+         A micro inverter's system view shows the AC figure, because that is the
+         number the vendor app puts on its front page, the one the device itself
+         echoes back when a power set-point is verified, and the one the 功率
+         curve beside this card is drawn from (`lovelace.py`).  Keeping the
+         drawing on the DC field would have made the two disagree by ~25 W on a
+         130 W roof, which reads as a bug.
+
+         The storage schematic keeps `sys_pv_p`: there the PV branch leads into
+         the battery, where the DC figure is the one that balances.
+
+         The fallback to this unit's own `pv1_power` is kept, and only this one:
+         a slave publishes no system level figures at all, and that unit *is* a
+         device in the system, so its own first input is a true (if partial)
+         sample of the same quantity - the same kind of number, measured
+         smaller.  It never turns into a different concept. */
+      const pvSource = this._isInverterSystem()
+        ? (this._read("system_plug_power", null) ?? this._read("system_pv_power", null))
+        : this._read("system_pv_power", null);
+      const pv = pvSource ?? this._read("pv1_power", null);
       /* 光伏2 is a **different quantity and has no device-side counterpart**:
          it is generation coming from *outside* this system - a second array, a
          neighbour's roof, anything the meter sees but the system does not own.
@@ -1930,6 +1953,26 @@ function _hmPowerFlowRegister() {
       for (let i = 1; i <= IV_PV_MAX; i += 1) {
         pvPorts.push(this._read(`pv${i}_power`, null));
       }
+      /* Every input added up, as the firmware's own strings report them.  The
+         Device tab of a one-input body draws that body's *whole* DC side, and
+         `pv1_power` alone is not it: a `1650` publishes two inputs on
+         ``quick/state`` even though it exposes one connector, and its
+         ``device/state`` carries the same split in ``pvs[]``.  Measured on
+         three of them over 45 s: `pv1_p` 4.8 against `pv2_p` 4.8, 4.3/4.3 and
+         4.0/4.0 - the firmware mirrors the single MPPT into both fields.
+
+         Summing that mirror therefore reports twice the real DC power, which is
+         exactly what was asked for and what the vendor app shows for this body:
+         the number on the Device tab is the sum of the strings the unit
+         declares, not a de-duplicated guess at how many MPPTs sit behind them.
+         De-duplicating was tried first and rejected - it needs a per-model
+         "these two fields are one input" table that a future firmware can
+         falsify silently, while the sum needs nothing and agrees with the app.
+
+         A body with several inputs is unaffected: `pv_total_power` is only
+         consulted for the single-port layout, where `pv1_power` and `pv2_power`
+         have no separate nodes to be drawn on. */
+      const pvTotal = this._read("pv_total_power", null);
       /* The household side of the meter, and the smart plug beside it.  Both are
          drawn on the system schematic no matter what §32 says about this unit's
          installation (see `_svgSystem`): the schematic shows the house the unit
@@ -2027,7 +2070,7 @@ function _hmPowerFlowRegister() {
       packs = Math.max(1, Math.min(declared > 0 ? declared : packs, STACK_MAX_PACKS));
 
       return {
-        pv, pv2, pvPorts, grid, gridPort, load, smartPlug, battery, soc,
+        pv, pv2, pvPorts, pvTotal, grid, gridPort, load, smartPlug, battery, soc,
         status: status.toLowerCase(), rssi, packs,
         /* Which role the *installation* gave this unit, per protocol §32.  The
            role no longer hides any branch of the system schematic - it only
@@ -2413,7 +2456,6 @@ function _hmPowerFlowRegister() {
       if (this._isMicroInverter()) return this._svgInverter(d);
       return this._svgSystem(d);
     }
-
     /**
      * True when the card is asked to draw a micro inverter (HiFlow) rather
      * than the storage schematic.
@@ -2428,6 +2470,41 @@ function _hmPowerFlowRegister() {
     _isMicroInverter() {
       const variant = this._config && this._config.variant;
       return String(variant || "").toLowerCase() === "inverter";
+    }
+
+    /**
+     * True when this is the **system** view of a micro inverter, which is the
+     * storage schematic with a handful of corrections applied.
+     *
+     * The two drawings are separate (`variant: inverter` picks the Device tab's
+     * port layout, this picks the System tab), so a single key cannot mean both
+     * - `inverter` must keep meaning "draw the unit's own ports".  Hence the
+     * third value: `variant: inverter-system` draws the shared schematic, then
+     * lets the three adjustments below apply, because a HiFlow installation
+     * differs from a storage one in ways the drawing has to respect:
+     *
+     * 1. **There is no 光伏2.**  光伏2 is generation from *outside* the system,
+     *    which only a metering unit can see.  A HiFlow house has no second
+     *    array reported that way, so the node is dead weight: it printed a
+     *    permanent `—` on every unit measured.
+     * 2. **A negative 负载 is folded into 光伏.**  When the meter reports the
+     *    house as exporting (负载 < 0) the energy is not being consumed at all -
+     *    it is generation the system did not account for, so it belongs with
+     *    the PV figure rather than as a negative load.  Only the *displayed*
+     *    number changes; the connector keeps its own reading and direction, so
+     *    the streak still travels the way the energy does.
+     * 3. **The labels move out of the connectors.**  The storage schematic puts
+     *    every caption under its ring, which works because its branches leave
+     *    sideways.  On the HiFlow layout the PV1 and 电网 branches drop straight
+     *    down from the ring, so the caption sat *on* the line.  There the
+     *    captions go above the ring instead, into empty canvas.
+     *
+     * The storage views (`_build_storage_views`) never set this key, so they
+     * keep their exact current drawing.
+     */
+    _isInverterSystem() {
+      const variant = this._config && this._config.variant;
+      return String(variant || "").toLowerCase() === "inverter-system";
     }
 
     /**
@@ -2527,7 +2604,10 @@ function _hmPowerFlowRegister() {
           caption: pvCount === 1 ? "PV" : `PV${i + 1}`,
           x,
           y: IV_NODE_ROW_Y,
-          power: d.pvPorts[i],
+          /* A one-input body has a single node, so `pvTotal` (every reported
+             input added up) is what it prints; several inputs each keep their
+             own reading.  See `_data` for why the sum is deliberate. */
+          power: pvCount === 1 ? (d.pvTotal ?? d.pvPorts[i]) : d.pvPorts[i],
           route: under
             ? riserRoute({ x, y: IV_NODE_ROW_Y }, term.pvBottom)
             : elbowRoute(
@@ -2801,9 +2881,9 @@ function _hmPowerFlowRegister() {
         { id: "plug", d: `M600 322 V${JUNCTION.y + 6}`, power: d.smartPlug,
           color: COLORS.sp, reverse: num(d.smartPlug) >= 0,
           stage: stageRight(num(d.smartPlug) >= 0) },
-        { id: "pv2", d: PV2_ROUTE, power: d.pv2,
+        ...(this._isInverterSystem() ? [] : [{ id: "pv2", d: PV2_ROUTE, power: d.pv2,
           color: COLORS.pv6, reverse: num(d.pv2) < 0,
-          stage: stageRight(num(d.pv2) < 0) },
+          stage: stageRight(num(d.pv2) < 0) }]),
       ];
 
       /* `has_meter: false` in §32 「状态事件」 (see `_data`): this unit takes no
@@ -2834,6 +2914,28 @@ function _hmPowerFlowRegister() {
         if (loadAt >= 0) routes.splice(loadAt, 1);
       }
 
+      /* A **negative** 负载 is not consumption.  The meter reporting the house
+         as exporting means the energy left the installation without being used,
+         so on a micro inverter's system view it is added to 光伏 - one claim in
+         one place, instead of generation sitting next to "minus consumption"
+         and the reader having to do the subtraction.
+
+         The branch goes with the number: the diagonal 负载 connector is removed
+         as well as its node.  Keeping either would leave the diagram asserting
+         two things at once - a wire carrying "−60 W" into the house while the
+         PV node had already been credited with those same 60 W.  `trunk` is
+         deliberately left alone: it is the energy gathering *at the junction*,
+         and the folded watts came from outside the system, so counting them
+         there too would double them a third time. */
+      const foldedLoad = this._isInverterSystem()
+        && present(d.load)
+        && num(d.load) < 0;
+      if (foldedLoad) {
+        const loadAt = routes.findIndex((r) => r.id === "load");
+        if (loadAt >= 0) routes.splice(loadAt, 1);
+      }
+      const pvValue = foldedLoad ? num(d.pv) + Math.abs(num(d.load)) : d.pv;
+
       const edges = routes.map((r) => `
         <path class="pf-edge" d="${r.d}" fill="none"
               vector-effect="non-scaling-stroke"/>`).join("");
@@ -2848,6 +2950,14 @@ function _hmPowerFlowRegister() {
       const nodes = this._nodes(d, {
         battery: hasBattery,
         reading,
+        /* The figure the 光伏 node prints - the combined one when the load was
+           folded in above.  `working()` is applied to this same value there, so
+           a house that exports more than it generates shows a lit node rather
+           than a dim, grey one carrying a healthy positive number. */
+        pvValue,
+        /* Tells the node layer to drop the 负载 ring, matching the connector
+           removed above. */
+        loadFolded: foldedLoad,
       });
 
       /* The unit in the middle works as soon as *anything* flows through it, so
@@ -2920,16 +3030,33 @@ function _hmPowerFlowRegister() {
          "reported 0 W" stay distinguishable. */
       const reading = opts.reading || ((v) => fmtW(v));
       const parts = [];
+      /* A micro inverter's system view needs two departures from the storage
+         layout; both are explained in full on `_isInverterSystem`. */
+      const inverterSystem = this._isInverterSystem();
+      /* What the 光伏 node prints.  It equals `d.pv` on every view but a micro
+         inverter's system view showing a negative 负载, where the caller has
+         already added those watts in (`_svgSystem`).  Read here rather than
+         recomputed so the node and the removal of the 负载 branch can never
+         disagree about whether the fold happened. */
+      const pvReading = opts.pvValue === undefined ? d.pv : opts.pvValue;
 
-      const node = (x, y, icon, on, value, caption) => {
+      /* `above` puts the value / caption *over* the ring instead of under it.
+         The storage schematic never needs it (every one of its branches leaves
+         its ring sideways), but a HiFlow draws 光伏1 and 电网 with a connector
+         dropping straight out of the ring, so the caption used to sit right on
+         top of the line. Moving it above the ring lands it in empty canvas and
+         the connector stays legible. */
+      const node = (x, y, icon, on, value, caption, above = false) => {
         const art = PF_ICONS[`${icon}.${on ? "on" : "off"}`] || "";
+        const vy = above ? -(NODE_R + 28) : NODE_R + 26;
+        const cy = above ? -(NODE_R + 48) : NODE_R + 46;
         parts.push(`<g class="pf-node" transform="translate(${x} ${y})">
             <image class="pf-ic" x="${-NODE_R}" y="${-NODE_R}"
                    width="${NODE_R * 2}" height="${NODE_R * 2}"
                    clip-path="url(#${NODE_CLIP_ID})" href="${art}"/>
-            <text class="pf-v" x="0" y="${NODE_R + 26}"
+            <text class="pf-v" x="0" y="${vy}"
                   text-anchor="middle">${value}</text>
-            <text class="pf-c" x="0" y="${NODE_R + 46}"
+            <text class="pf-c" x="0" y="${cy}"
                   text-anchor="middle">${esc(caption)}</text>
           </g>`);
       };
@@ -2945,17 +3072,27 @@ function _hmPowerFlowRegister() {
          generation of the devices in this system and 光伏2 is generation from
          outside it; a reader who takes 光伏2 for "the second connector" would
          misread the house.  The parenthesis is short enough to fit under the
-         node and says it without a legend. */
-      node(NODE_COL_L, NODE_ROW_TOP, "pv", working(d.pv),
-        reading(d.pv), t("PV1 (in system)", "光伏1（系统内）"));
+         node and says it without a legend.  On a micro inverter there is no
+         光伏2 at all (`_isInverterSystem`), so the qualifier on 光伏1 has
+         nothing left to distinguish it from - it is dropped there. */
+      node(NODE_COL_L, NODE_ROW_TOP, "pv", working(pvReading),
+        reading(pvReading),
+        inverterSystem ? t("PV", "光伏") : t("PV1 (in system)", "光伏1（系统内）"),
+        inverterSystem);
       if (opts.battery) {
         node(NODE_COL_L, NODE_ROW_BOT, "battery", working(d.battery),
           `${reading(d.battery)}${d.soc === null ? "" : `　${num(d.soc).toFixed(2)}%`}`,
           t("Storage", "微储"));
       }
 
-      node(NODE_COL_M, NODE_ROW_TOP, "pv", working(d.pv2),
-        reading(d.pv2), t("PV2 (external)", "光伏2（系统外）"));
+      /* A micro inverter's installation has no 光伏2 branch: see
+         `_isInverterSystem`.  Leaving it out of the node layer as well as out of
+         `routes` is what keeps the two layers agreeing - a node without a
+         connector would have hung in empty canvas. */
+      if (!inverterSystem) {
+        node(NODE_COL_M, NODE_ROW_TOP, "pv", working(d.pv2),
+          reading(d.pv2), t("PV2 (external)", "光伏2（系统外）"));
+      }
       if (d.meter === false) {
         /* No meter: one lumped 「电网&负载」 node where 电网 used to be.  It has
            no 电网输入 / 电网输出 pill - the reading is the unit's AC port, which
@@ -2963,7 +3100,7 @@ function _hmPowerFlowRegister() {
            see - and it prints the magnitude, so the number matches the vendor
            app's own dashboard.  See `_svgSystem` for the connector. */
         node(NODE_COL_R, NODE_ROW_TOP, "gridload", working(d.gridPort),
-          reading(d.gridPort), t("Grid & Load", "电网&负载"));
+          reading(d.gridPort), t("Grid & Load", "电网&负载"), inverterSystem);
       } else {
         const g = num(d.grid);
         const importing = g > 0;
@@ -2979,9 +3116,17 @@ function _hmPowerFlowRegister() {
           ? t("Grid", "电网")
           : (importing ? t("Grid In", "电网输入") : t("Grid Out", "电网输出"));
         node(NODE_COL_R, NODE_ROW_TOP, "grid", working(d.grid),
-          reading(d.grid), caption);
-        node(NODE_COL_M, NODE_ROW_BOT, "load", working(d.load),
-          reading(d.load), t("Load", "负载"));
+          reading(d.grid), caption, inverterSystem);
+        /* A negative 负载 on a micro inverter's installation is not consumption
+           at all - it is generation the system did not account for, which is why
+           it is already folded into 光伏 (`_svgSystem` passes the combined
+           figure as `opts.pvValue`).  Drawing the same watts a second time as a
+           negative load would count them twice, so the node is left out entirely
+           in that case - the same treatment the connector gets. */
+        if (!opts.loadFolded) {
+          node(NODE_COL_M, NODE_ROW_BOT, "load", working(d.load),
+            reading(d.load), t("Load", "负载"));
+        }
       }
       node(NODE_COL_R, NODE_ROW_BOT, "plug", working(d.smartPlug),
         reading(d.smartPlug), t("Smart Plug", "智能插座"));

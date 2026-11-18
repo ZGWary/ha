@@ -1960,7 +1960,15 @@ function _hmHistoryRegister() {
           for (let i = 0; i < times.length; i += 1) {
             if (Math.abs(top[i] - base[i]) > 1e-9) { flat = false; break; }
           }
-          if (flat) continue;
+          /* A series that never leaves its base - every bucket zero, or a band
+             stacked on a sibling that happened to equal it - is skipped as a
+             filled *area* but never as a *line*.  Dropping it entirely made a
+             channel that honestly read 0 W look exactly like one the card had
+             failed to load, which is the misleading case the user reported: the
+             legend still lists the series, so a missing curve reads as a broken
+             chart rather than as "measured, and it was zero".  A flat series
+             therefore still strokes its top edge below, which lands on the zero
+             line as a thin line in the series colour. */
           /* The top edge is smoothed, the base stays straight: the base is the
              zero line or the band of the series below, and smoothing it would
              let one curve bleed into the next. `smoothPath()` is monotone, so a
@@ -2004,7 +2012,11 @@ function _hmHistoryRegister() {
           const d = `${smoothPath(topPts)}`
             + basePts.map(([bx, by]) => `L${bx.toFixed(1)} ${by.toFixed(1)}`).join("")
             + "Z";
-          areas += `<path d="${d}" fill="${esc(color)}" fill-opacity="${fillOp}" stroke="none"/>`;
+          /* A flat series has no area to fill - the band has zero height - so
+             only the edge is emitted, which is the whole point of keeping it. */
+          if (!flat) {
+            areas += `<path d="${d}" fill="${esc(color)}" fill-opacity="${fillOp}" stroke="none"/>`;
+          }
           // the visible edge of the band
           areas += `<path d="${smoothPath(topPts)}" fill="none" stroke="${esc(color)}"`
             + ` stroke-width="${strokeW}" stroke-opacity="${strokeOp}"`

@@ -186,8 +186,25 @@ _ROLE_SYSTEM_KEY = "g2_role_system_view"
 #                  adds are chart cards the user picks from data, not from
 #                  curves.  The stored title is rewritten for every dashboard
 #                  that still carries the old one
+#   23             the System view of a micro inverter stops describing *this
+#                  unit* and starts describing *the installation*.  Three
+#                  changes travel together, because any one of them alone would
+#                  leave the tab self-contradictory:
+#                    * the schematic is drawn with
+#                      ``variant: inverter-system`` - no 光伏2 branch, a negative
+#                      负载 folded into 光伏, value labels over the rings instead
+#                      of under them
+#                    * the 光伏功率 curve reads ``system_plug_power``
+#                      (``sys_plug_p``, the AC side, which is what the vendor app
+#                      reports) instead of ``system_pv_power`` (``sys_pv_p``, the
+#                      DC side).  Measured on the same second: 100.6 W against
+#                      133.3 W
+#                    * 今日发电 reads ``plant_pv_energy_today``, the aggregated
+#                      master + slaves figure, because the firmware only ever
+#                      reports each unit's own share (measured 387 / 148 / 613 Wh
+#                      on one installation)
 _LAYOUT_KEY = "g2_layout"
-_LAYOUT_VERSION = 22
+_LAYOUT_VERSION = 23
 
 # The view titles an earlier release wrote.  Used together with the absence of
 # ``icon`` / ``max_columns`` as the fingerprint of an untouched old dashboard, so
@@ -1098,6 +1115,7 @@ async def _async_upgrade_layout(
         changed = _migrate_optional_entities(config, hass, dev_id) or changed
         changed = _migrate_chart_options_card(config, dev_id) or changed
         changed = _migrate_chart_options_title(config) or changed
+        changed = _migrate_plant_view(config, dev_id) or changed
         if not changed:
             # Nothing matched, so the dashboard is not one of ours at the
             # revision being migrated (a hand-built dashboard, or a layout from
@@ -1691,6 +1709,77 @@ def _migrate_system_energy_chart(config: dict[str, Any], dev_id: str) -> bool:
             return True
 
     return False
+
+
+def _migrate_plant_view(config: dict[str, Any], dev_id: str) -> bool:
+    """Re-point the System tab of a micro inverter at the installation; rev. 23.
+
+    Three things change together on that tab, and doing any one of them alone
+    would leave it self-contradictory (a plant-wide 今日发电 beside a per-unit
+    curve, or a schematic without 光伏2 beside a curve that still plots it):
+
+    1. the ``hoymiles-g2-power-flow`` card of the **system** view gets
+       ``variant: inverter-system``;
+    2. the 光伏功率 series of the system power chart moves from
+       ``system_pv_power`` to ``system_plug_power``;
+    3. the 今日发电 gauge moves from ``system_pv_energy_today`` to
+       ``plant_pv_energy_today``.
+
+    Only the ``system`` view is edited.  The Device tab keeps both the plain
+    schematic (``variant: inverter``) and the per-unit entities, because that tab
+    is about this unit - and a stored dashboard may legitimately have a System
+    tab that a slave never got (``_async_sync_role`` removes it), in which case
+    there is nothing here to do.
+
+    Each step is independent and idempotent: a card the user removed, re-added or
+    re-pointed is left as they left it, and a second run returns ``False``.
+    """
+    if not _is_inverter(dev_id):
+        return False
+
+    views = config.get("views")
+    if not isinstance(views, list):
+        return False
+
+    old_pv = _entity(dev_id, "system_pv_power")
+    new_pv = _entity(dev_id, "system_plug_power")
+    old_today = _entity(dev_id, "system_pv_energy_today")
+    new_today = _entity(dev_id, "plant_pv_energy_today")
+
+    changed = False
+
+    for view in views:
+        if not isinstance(view, dict) or view.get("path") != "system":
+            continue
+
+        for card in _walk_cards(view.get("sections") or []):
+            if not isinstance(card, dict):
+                continue
+
+            # 1. the schematic.
+            if (
+                card.get("type") == POWER_FLOW_CARD
+                and card.get("dev_id") == dev_id
+                and card.get("variant") in (None, "")
+            ):
+                card["variant"] = "inverter-system"
+                changed = True
+
+            # 2. the 光伏功率 curve.
+            series = card.get("series")
+            if isinstance(series, list):
+                for item in series:
+                    if not isinstance(item, dict) or item.get("entity") != old_pv:
+                        continue
+                    item["entity"] = new_pv
+                    changed = True
+
+            # 3. the 今日发电 gauge.
+            if card.get("entity") == old_today:
+                card["entity"] = new_today
+                changed = True
+
+    return changed
 
 
 def _migrate_drop_heading(config: dict[str, Any]) -> bool:
@@ -2619,8 +2708,19 @@ def _build_inverter_views(
     # power chart onto the same statistic grid.
     system_energy_group = f"{slug}-energy"
 
+    # The PV curve reads `system_plug_power` (`sys_plug_p`) rather than
+    # `system_pv_power` (`sys_pv_p`).  The two are different measurements and
+    # only one of them answers "how much did my roof make": `sys_pv_p` is the
+    # DC side, i.e. what the panels delivered *into* the units, while
+    # `sys_plug_p` is what the installation delivered at its AC terminals - the
+    # number the vendor app puts on the front page and the one the device
+    # itself reports back when the power set-point is verified.  The two differ
+    # by the units' own conversion and standby losses (measured,
+    # `sys_pv_p` 133.3 W against `sys_plug_p` 100.6 W on the same second), and
+    # the schematic's PV node is read from the same field so the card and the
+    # curve cannot disagree.
     pv_series = {
-        "entity": _entity(dev_id, "system_pv_power"),
+        "entity": _entity(dev_id, "system_plug_power"),
         "name": _t("PV Power", "光伏功率"),
         "color": "#22c55e",
     }
@@ -2635,11 +2735,20 @@ def _build_inverter_views(
         "color": "#f5a623",
     }
 
-    # One curve per port that exists; the colours match the port gauges.
+    # One curve per port that exists; the colours match the port gauges.  A
+    # single-input body gets one curve reading `pv_total_power` instead of
+    # `pv1_power`, because that body reports more than one DC string even
+    # though it exposes one connector (`1650`: `pv1_p` / `pv2_p` carry the same
+    # mirrored reading) and the schematic beside this chart prints the sum.  Two
+    # cards on the same tab disagreeing about the roof by a factor of two is the
+    # one outcome worth avoiding, so the curve follows the node.
     _PORT_COLORS = ("#22c55e", "#4a90d9", "#8b5cf6", "#06b6d4")
     port_series = [
         {
-            "entity": _entity(dev_id, f"pv{port}_power"),
+            "entity": _entity(
+                dev_id,
+                "pv_total_power" if ports == 1 else f"pv{port}_power",
+            ),
             "name": _t(f"PV{port}", f"PV{port}"),
             "color": _PORT_COLORS[(port - 1) % len(_PORT_COLORS)],
         }
@@ -2652,6 +2761,16 @@ def _build_inverter_views(
         "title": _t("My Home", "我的家"),
         "max_width": 700,
         "show_title": False,
+        # The System tab draws *the installation*, not this unit, and a grid-tied
+        # HiFlow installation differs from the storage schematic in three ways:
+        # there is no second PV branch (光伏2 is a storage input), a negative
+        # 负载 is generation and belongs on 光伏, and the value labels sit over
+        # the rings because the HiFlow connectors leave the ring downwards.  The
+        # card knows all three under this one name; the storage dashboard never
+        # sets it, so its schematic is untouched.  The Device tab below overrides
+        # it with `"variant": "inverter"` (the per-unit layout) through the
+        # `{**power_flow, ...}` spread.
+        "variant": "inverter-system",
     }
 
     system = _view(
@@ -2665,9 +2784,19 @@ def _build_inverter_views(
                             _full_width(power_flow),
                             _subgrid(
                                 [
+                                    # The installation's yield, not this unit's.
+                                    # Every HiFlow reports ``pvs[].ed`` for
+                                    # itself and the protocol never adds them up
+                                    # (measured 387 / 148 / 613 Wh on three units
+                                    # of one installation), so the System tab -
+                                    # which describes the installation - reads the
+                                    # aggregated entity instead of the per-unit
+                                    # one.  The Device tab keeps
+                                    # ``system_pv_energy_today``, because that tab
+                                    # is about this unit.
                                     _gauge(
                                         dev_id,
-                                        "system_pv_energy_today",
+                                        "plant_pv_energy_today",
                                         _t("PV Today", "今日发电"),
                                         "Wh",
                                         max=2000,
