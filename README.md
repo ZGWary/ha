@@ -4,9 +4,9 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2023.8%2B-41BDF5.svg)](https://www.home-assistant.io)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Bring a **Hoymiles Micro Storage** system into Home Assistant — with a visual editor for
-**time-of-use (TOU) charge/discharge plans** and **eight purpose-built Lovelace cards**
-that mirror the layout of the Hoymiles app.
+Bring a **Hoymiles Micro Storage** system or a **HiFlow (RMI) micro inverter** into Home
+Assistant — with a visual editor for **time-of-use (TOU) charge/discharge plans** and
+**purpose-built Lovelace cards** that mirror the layout of the Hoymiles app.
 
 **English** · [简体中文](README.zh-Hans.md)
 
@@ -15,6 +15,7 @@ that mirror the layout of the Hoymiles app.
 | Install and use it | this page |
 | Every card option, in full | **[docs/CARDS.md](docs/CARDS.md)** |
 | MQTT topics, firmware discovery patches, entity list | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** |
+| HiFlow (RMI) micro inverters | **[docs/hiflow-inverters.md](docs/hiflow-inverters.md)** |
 | Publishing a release / maintaining this repo | **[DEPLOY.md](DEPLOY.md)** |
 
 ---
@@ -65,7 +66,7 @@ that mirror the layout of the Hoymiles app.
 |---|---|
 | **Home Assistant** | 2023.8 or newer (declared in `hacs.json`) |
 | **Required integration** | Home Assistant **MQTT**, pointed at the same broker as the device |
-| **Devices** | MS-A2 · HiBattery 4020 X · HiBattery 1920 AC |
+| **Devices** | Storage: MS-A2 · HiBattery 4020 X · HiBattery 1920 AC — Micro inverters: HiFlow (`1650`) · HiFlow Pro 1-in-1 (`4160`) · 2-in-1 (`4161`) · 4-in-1 (`4162`) |
 | **Firmware** | Must publish MQTT discovery under the `homeassistant/` prefix |
 | **Recorder** | Optional — only needed by the history chart and the energy sankey |
 
@@ -187,7 +188,7 @@ Configuring a TOU plan, either way works:
 
 ---
 
-## The eight cards
+## The cards
 
 | Card | What it does |
 |---|---|
@@ -204,6 +205,20 @@ Each card is rooted at `ha-card`, is self-drawn SVG, and needs no CDN.
 
 **→ Complete option reference for every card: [docs/CARDS.md](docs/CARDS.md)**
 
+A micro inverter gets its own dashboard and its own card elements, so a storage card and
+an inverter card can live on the same frontend without clashing:
+
+| Inverter card | What it does |
+|---|---|
+| `custom:hoymiles-g2-power-flow` | PV string(s) on the left, grid port on the right, the product photo in the middle; string count follows the PID (1 / 2 / 4) |
+| `custom:hoymiles-g2-battery` | Inverter variant of the battery card — product photo plus PV input, grid output and daily yield |
+| `custom:hoymiles-g2-alarm` | Decoded alarm list (bilingual names); hides itself while the unit reports none |
+| `custom:hoymiles-g2-history-chart` | Same chart engine as the storage card, plus bar mode for month/year energy |
+| `custom:hoymiles-g2-control` | Power limit, keep-alive, optional chart toggles, reboot |
+
+The remaining `hoymiles-g2-*` cards (`gauge`, `energy-sankey`, `pack-list`, `tou-editor`,
+`chart-options`, `i18n`) are shared implementations used by both dashboards.
+
 > Cards are injected as frontend modules when the integration starts. If the UI does not
 > pick up a change, hard-refresh the browser (`Ctrl` + `F5`).
 
@@ -219,6 +234,10 @@ Each card is rooted at `ha-card`, is self-drawn SVG, and needs no CDN.
 | `hoymiles.set_ems_mode` | Switch EMS mode (`general` / `mqtt_ctrl` / `tou_plan`) |
 | `hoymiles.set_phase_output_power` | Set A/B/C phase output limits in one call |
 | `hoymiles.reboot` | Restart the device |
+| `hoymiles.start_power_ctrl_keepalive` | Micro inverter only — keep re-sending a power limit so the unit does not fall back to full output |
+| `hoymiles.stop_power_ctrl_keepalive` | Micro inverter only — stop the keep-alive |
+| `hoymiles.get_optional_charts` | Read which optional chart cards are enabled for a device dashboard |
+| `hoymiles.set_optional_charts` | Add or remove optional chart cards on a device dashboard |
 
 Target the device with **one** of:
 

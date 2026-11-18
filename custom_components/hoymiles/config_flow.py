@@ -16,7 +16,7 @@ from homeassistant.helpers.selector import (
 )
 
 from . import mqtt_util
-from .const import CONF_CREATE_DASHBOARD, CONF_DEV_ID, DOMAIN, NAME
+from .const import CONF_CREATE_DASHBOARD, CONF_DEV_ID, DOMAIN, NAME, device_family
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,7 +33,20 @@ class HoymilesConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> Any:
-        """Return the TOU configuration wizard."""
+        """Return the configure wizard that fits this device's family.
+
+        The storage family keeps the TOU wizard it has always had.  A micro
+        inverter has no TOU plan, so it gets the inverter wizard instead (the
+        optional charts of its Device view).
+        """
+        dev_id = str(config_entry.data.get(CONF_DEV_ID, ""))
+        if device_family(dev_id) == "inverter":
+            from .inverter.options_flow import (  # noqa: PLC0415
+                HoymilesOptionsFlow as InverterOptionsFlow,
+            )
+
+            return InverterOptionsFlow()
+
         from .options_flow import HoymilesOptionsFlow  # noqa: PLC0415
 
         return HoymilesOptionsFlow()

@@ -52,6 +52,7 @@ from .const import (
     TOU_DAY_ACK_STATUS,
     TOU_GET_STATUS,
     TOU_WEEK_ACK_STATUS,
+    device_family,
 )
 from .coordinator import HoymilesCoordinator
 
@@ -546,6 +547,15 @@ async def async_setup_entry(
     """Set up the sensors from a config entry."""
     coordinator: HoymilesCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     dev_id: str = hass.data[DOMAIN][entry.entry_id]["dev_id"]
+
+    # A micro inverter has its own sensor table (``inverter/sensor.py``) and
+    # creates its entities through the capability gate; the storage list below
+    # never applies to it.
+    if device_family(dev_id) == "inverter":
+        from .inverter.sensor import async_setup_entry as _inverter_setup  # noqa: PLC0415
+
+        await _inverter_setup(hass, entry, async_add_entities)
+        return
 
     async_add_entities(
         HoymilesSensor(coordinator, dev_id, description)

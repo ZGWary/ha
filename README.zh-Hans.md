@@ -4,8 +4,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2023.8%2B-41BDF5.svg)](https://www.home-assistant.io)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-把**禾迈微储**接入 Home Assistant，并提供**分时（TOU）充放电计划**的可视化配置界面，
-以及**八张贴合禾迈 App 版式的 Lovelace 卡片**。
+把**禾迈微储**或 **HiFlow（RMI）微型逆变器**接入 Home Assistant，并提供**分时（TOU）充放电计划**的可视化配置界面，以及**贴合禾迈 App 版式的 Lovelace 卡片**。
 
 [English](README.md) · **简体中文**
 
@@ -14,6 +13,7 @@
 | 安装与上手 | 本页 |
 | 每张卡片的完整参数 | **[docs/CARDS.md](docs/CARDS.md)** |
 | MQTT 话题、固件 discovery 补丁、实体清单 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** |
+| HiFlow（RMI）微型逆变器 | **[docs/hiflow-inverters.md](docs/hiflow-inverters.md)** |
 | 发版 / 仓库维护 | **[DEPLOY.md](DEPLOY.md)** |
 
 ---
@@ -56,7 +56,7 @@
 |---|---|
 | **Home Assistant** | 2023.8 或更高（已在 `hacs.json` 声明） |
 | **必需集成** | Home Assistant 的 **MQTT** 集成，指向与设备相同的 Broker |
-| **设备** | MS-A2 · HiBattery 4020 X · HiBattery 1920 AC |
+| **设备** | 微储：MS-A2 · HiBattery 4020 X · HiBattery 1920 AC —— 微逆：HiFlow（`1650`）· HiFlow Pro 1-in-1（`4160`）/ 2-in-1（`4161`）/ 4-in-1（`4162`） |
 | **固件** | 需在 `homeassistant/` 前缀下发布 MQTT discovery |
 | **Recorder** | 可选 —— 仅历史曲线卡片与桑基图卡片需要 |
 
@@ -167,7 +167,7 @@ cards:
 
 ---
 
-## 八张卡片
+## 卡片
 
 | 卡片 | 作用 |
 |---|---|
@@ -184,6 +184,18 @@ cards:
 
 **→ 每张卡片的完整参数说明：[docs/CARDS.md](docs/CARDS.md)**
 
+微型逆变器有自己的一套仪表盘和卡片元素名，所以同一前端里微储卡片与微逆卡片可以共存：
+
+| 微逆卡片 | 作用 |
+|---|---|
+| `custom:hoymiles-g2-power-flow` | 左侧画光伏组串、右侧画并网端口，中间放产品图；组串数由 PID 决定（1 / 2 / 4） |
+| `custom:hoymiles-g2-battery` | 电池卡片的微逆变体 —— 产品图 + 光伏输入 / 并网输出 / 今日发电 |
+| `custom:hoymiles-g2-alarm` | 解码后的告警列表（告警名中英双语）；无告警时整卡隐藏 |
+| `custom:hoymiles-g2-history-chart` | 与微储同一套曲线引擎，额外支持月/年电量的柱状模式 |
+| `custom:hoymiles-g2-control` | 功率限制、keep-alive、可选曲线开关、重启 |
+
+其余 `hoymiles-g2-*` 卡片（`gauge`、`energy-sankey`、`pack-list`、`tou-editor`、`chart-options`、`i18n`）是两套仪表盘共用的实现。
+
 > 卡片在集成启动时自动注入为前端模块。界面没变化时请硬刷新浏览器（`Ctrl` + `F5`）。
 
 ---
@@ -198,6 +210,10 @@ cards:
 | `hoymiles.set_ems_mode` | 切换 EMS 模式（`general` / `mqtt_ctrl` / `tou_plan`） |
 | `hoymiles.set_phase_output_power` | 一次性设置 A/B/C 三相输出功率限值 |
 | `hoymiles.reboot` | 重启设备 |
+| `hoymiles.start_power_ctrl_keepalive` | 仅微逆 —— 持续重发功率限值，避免设备回落到满功率输出 |
+| `hoymiles.stop_power_ctrl_keepalive` | 仅微逆 —— 停止 keep-alive |
+| `hoymiles.get_optional_charts` | 读取某台设备的仪表盘启用了哪些可选曲线卡片 |
+| `hoymiles.set_optional_charts` | 在设备仪表盘上增删可选曲线卡片 |
 
 目标设备二选一：
 

@@ -96,6 +96,17 @@
         "data": {
           "overwrite": "Vorhandenes Dashboard überschreiben"
         }
+      },
+      "charts": {
+        "title": "Optionale Gerätekurven",
+        "description": "Hake einen Messwert an, um seine Kurvenkarte zur Geräteansicht dieses Geräts hinzuzufügen. Eine Karte beginnt in dem Moment aufzuzeichnen, in dem sie angehakt wird, und zeichnet nur die danach aufgezeichneten Daten - ein erst abgehakter und später wieder angehakter Eintrag startet also eine neue Kurve.",
+        "data": {
+          "grid_current": "Netzstrom (A)",
+          "grid_frequency": "Netzfrequenz (Hz)",
+          "active_power": "Wirkleistung (W)",
+          "reactive_power": "Blindleistung (var)",
+          "rssi": "Signalstärke (dBm)"
+        }
       }
     },
     "abort": {
@@ -104,7 +115,9 @@
       "dashboard_created": "Dashboard angelegt",
       "dashboard_updated": "Dashboard neu aufgebaut",
       "dashboard_exists": "Für dieses Gerät gibt es bereits ein Dashboard, es wurde nichts geändert",
-      "dashboard_failed": "Das Dashboard konnte nicht angelegt werden"
+      "dashboard_failed": "Das Dashboard konnte nicht angelegt werden",
+      "charts_unsupported": "Optionale Kurven gibt es nur bei einem Mikro-Wechselrichter (HiFlow / HiFlow Pro)",
+      "charts_not_saved": "Das Dashboard konnte nicht geschrieben werden; es wurde keine Kurve geändert"
     }
   },
   "services": {
@@ -112,58 +125,158 @@
       "name": "TOU-Tagesplan setzen",
       "description": "Sendet einen TOU-Tagesplan (day1..day8) an das Gerät.",
       "fields": {
-        "dev_id": { "name": "Geräte-ID", "description": "Geräte-ID (client_prefix-SN)." },
-        "day_idx": { "name": "Index des Tagesplans", "description": "1..8" },
-        "day_plan": { "name": "Tagesplan", "description": "Liste der Segmente (max. 12)." }
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "day_idx": {
+          "name": "Index des Tagesplans",
+          "description": "1..8"
+        },
+        "day_plan": {
+          "name": "Tagesplan",
+          "description": "Liste der Segmente (max. 12)."
+        }
       }
     },
     "set_tou_week_plan": {
       "name": "TOU-Wochenplan setzen",
       "description": "Sendet die Zuordnung Wochentag → Tagesplan.",
       "fields": {
-        "dev_id": { "name": "Geräte-ID", "description": "Geräte-ID (client_prefix-SN)." },
-        "week_plan": { "name": "Wochenplan", "description": "Liste aus {week:[...], day_idx:N}." }
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "week_plan": {
+          "name": "Wochenplan",
+          "description": "Liste aus {week:[...], day_idx:N}."
+        }
       }
     },
     "get_tou_plan": {
       "name": "TOU-Plan abrufen",
       "description": "Fragt den konfigurierten Plan für einen Wochentag ab.",
       "fields": {
-        "dev_id": { "name": "Geräte-ID", "description": "Geräte-ID (client_prefix-SN)." },
-        "week": { "name": "Wochentag", "description": "Mo..So" }
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "week": {
+          "name": "Wochentag",
+          "description": "Mo..So"
+        }
       }
     },
     "set_ems_mode": {
       "name": "EMS-Modus setzen",
       "description": "Wechselt den EMS-Modus (general / mqtt_ctrl / tou_plan).",
       "fields": {
-        "dev_id": { "name": "Geräte-ID", "description": "Geräte-ID (client_prefix-SN)." },
-        "mode": { "name": "Modus", "description": "general, mqtt_ctrl oder tou_plan" }
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "mode": {
+          "name": "Modus",
+          "description": "general, mqtt_ctrl oder tou_plan"
+        }
       }
     },
     "reboot": {
       "name": "Gerät neu starten",
       "description": "Sendet den Befehl RESTART an das Gerät.",
       "fields": {
-        "dev_id": { "name": "Geräte-ID", "description": "Geräte-ID (client_prefix-SN)." }
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        }
       }
     },
     "set_phase_output_power": {
       "name": "Ausgangsleistung aller Phasen setzen",
       "description": "Setzt die Ausgangsleistungsgrenze aller drei Phasen auf einmal.",
       "fields": {
-        "dev_id": { "name": "Geräte-ID", "description": "Geräte-ID (client_prefix-SN)." },
-        "phase_a": { "name": "Grenze Phase A", "description": "Ausgangsleistungsgrenze in Watt (100..2500)." },
-        "phase_b": { "name": "Grenze Phase B", "description": "Ausgangsleistungsgrenze in Watt (100..2500)." },
-        "phase_c": { "name": "Grenze Phase C", "description": "Ausgangsleistungsgrenze in Watt (100..2500)." }
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "phase_a": {
+          "name": "Grenze Phase A",
+          "description": "Ausgangsleistungsgrenze in Watt (100..2500)."
+        },
+        "phase_b": {
+          "name": "Grenze Phase B",
+          "description": "Ausgangsleistungsgrenze in Watt (100..2500)."
+        },
+        "phase_c": {
+          "name": "Grenze Phase C",
+          "description": "Ausgangsleistungsgrenze in Watt (100..2500)."
+        }
       }
     },
     "create_dashboard": {
       "name": "Geräte-Dashboard anlegen",
       "description": "Baut das mitgelieferte Lovelace-Dashboard (System / Gerät / Steuerung) für ein Gerät.",
       "fields": {
-        "dev_id": { "name": "Geräte-ID", "description": "Geräte-ID (client_prefix-SN)." },
-        "overwrite": { "name": "Überschreiben", "description": "Das Layout neu aufbauen, auch wenn das Dashboard bereits existiert." }
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "overwrite": {
+          "name": "Überschreiben",
+          "description": "Das Layout neu aufbauen, auch wenn das Dashboard bereits existiert."
+        }
+      }
+    },
+    "start_power_ctrl_keepalive": {
+      "name": "Leistungsbegrenzung dauerhaft halten",
+      "description": "Sendet einen power_ctrl-Wert periodisch erneut, weil die Firmware ihn nach etwa einer Minute verwirft.",
+      "fields": {
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "power": {
+          "name": "Leistung",
+          "description": "Zu haltende Leistungsgrenze in Watt."
+        },
+        "period": {
+          "name": "Intervall",
+          "description": "Sekunden zwischen zwei Aussendungen (5..3600, Standard 30)."
+        }
+      }
+    },
+    "stop_power_ctrl_keepalive": {
+      "name": "Dauerhafte Leistungsbegrenzung beenden",
+      "description": "Beendet das periodische Senden von power_ctrl für ein Gerät.",
+      "fields": {
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        }
+      }
+    },
+    "get_optional_charts": {
+      "name": "Optionale Gerätekurven lesen",
+      "description": "Gibt zurück, welche optionalen Kurven der Geräteansicht aktiv sind und seit wann sie aufgezeichnet werden.",
+      "fields": {
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        }
+      }
+    },
+    "set_optional_charts": {
+      "name": "Optionale Gerätekurven setzen",
+      "description": "Aktiviert oder deaktiviert die optionalen Kurven der Geräteansicht. Ein weggelassener Schlüssel wird deaktiviert, daher immer den vollständigen Satz senden.",
+      "fields": {
+        "dev_id": {
+          "name": "Geräte-ID",
+          "description": "Geräte-ID (client_prefix-SN)."
+        },
+        "charts": {
+          "name": "Kurven",
+          "description": "Objekt von Kurven-Schlüssel auf Boolean: grid_current, grid_frequency, active_power, reactive_power, rssi."
+        }
       }
     }
   }

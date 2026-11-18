@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, SRC_DEVICE, SRC_QUICK
+from .const import DOMAIN, MANUFACTURER, SRC_DEVICE, SRC_QUICK, device_family
 from .coordinator import HoymilesCoordinator
 
 
@@ -91,6 +91,16 @@ async def async_setup_entry(
     """Set up the binary sensors from a config entry."""
     coordinator: HoymilesCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     dev_id: str = hass.data[DOMAIN][entry.entry_id]["dev_id"]
+
+    # Micro inverters have no battery packs, so the heating/sleep flags the
+    # storage table below describes do not exist for them.
+    if device_family(dev_id) == "inverter":
+        from .inverter.binary_sensor import (  # noqa: PLC0415
+            async_setup_entry as _inverter_setup,
+        )
+
+        await _inverter_setup(hass, entry, async_add_entities)
+        return
 
     async_add_entities(
         HoymilesBinarySensor(coordinator, dev_id, description)

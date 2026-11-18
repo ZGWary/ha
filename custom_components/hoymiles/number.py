@@ -52,6 +52,7 @@ from .const import (
     PHASE_POWER_MAX,
     PHASE_POWER_MIN,
     PHASE_POWER_STEP,
+    device_family,
 )
 from .coordinator import HoymilesCoordinator
 
@@ -84,6 +85,14 @@ async def async_setup_entry(
     """Set up the per phase output power numbers."""
     coordinator: HoymilesCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     dev_id: str = hass.data[DOMAIN][entry.entry_id]["dev_id"]
+
+    # A micro inverter exposes `power_ctrl` and its own per port limits, which
+    # is a different set of numbers from the storage phase table below.
+    if device_family(dev_id) == "inverter":
+        from .inverter.number import async_setup_entry as _inverter_setup  # noqa: PLC0415
+
+        await _inverter_setup(hass, entry, async_add_entities)
+        return
 
     async_add_entities(
         HoymilesPhaseNumber(coordinator, dev_id, description)
