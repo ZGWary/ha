@@ -29,9 +29,9 @@
 | `options_flow.py` | 选项菜单新增「可选的设备曲线卡片」步骤（`async_step_charts`），按设备 dashboard 现状预选勾选框 |
 | `www/hoymiles-g2-alarm.js` | 告警卡片：列表渲染（名称**中英双语**，按界面语言决定主次）、四种状态分支（不可用 / 尚未收到 / 无告警 / 有告警）、`only_when_alarm`（无告警时整卡隐藏且 `getCardSize()` 返回 0，把行让给旁边的功率流图） |
 | `www/hoymiles-g2-battery.js` | 微逆模式：设备识别、`_isMicroInverter()`、`_microInverterBody()`、样式 |
-| `www/hoymiles-g2-power-flow.js` | 微逆设备布局 `variant: inverter`：只画光伏 + 并网端口，中间放产品图；单口机型（`pvCount === 1`）的 PV 节点读 `pv_total_power`。系统布局 `variant: inverter-system`（`_isInverterSystem()`）三处不同：**不画光伏2**、`sys_load_p < 0` 时把负载瓦数并进光伏并去掉负载节点、节点标签移到环上方（`node(..., above)`）。`system` 视图的光伏读数优先取 `system_plug_power`（交流侧）而非 `system_pv_power`（直流侧）。`alarm_entity` 在画布左上角画健康徽标（无告警绿圈对勾 / 有告警**实心红三角感叹号**，与厂商 G3 仪表盘一致），并在告警卡隐藏时由 `_syncRowSpan()` 经 `_gridItem()` 找到真正带 `grid-column` 的那层祖先、把它撑成 `1 / -1`（`0` 与「未知」都撑，因为 `only_when_alarm` 两种情况都不显示），同时由 `_wrapStyle()` 把插图钉在半行宽度上、居中，保证两种状态下**卡片高度一致**（宽度变、高度不变）；`max_width: 0` 表示不设像素上限，半行时 `max-width:none`、整行时取实测的半行宽度 |
+| `www/hoymiles-g2-power-flow.js` | 微逆设备布局 `variant: inverter`：只画光伏 + 并网端口，中间放产品图；单口机型（`pvCount === 1`）的 PV 节点读 `pv_total_power`，`1650` 例外地拆成上下两路 `PV1` / `PV2`（两气泡都显示合计值，`IV_SPLIT_*` / `mergeRoute()` / `_splitPv()`）。系统布局 `variant: inverter-system`（`_isInverterSystem()`）三处不同：**不画光伏2**、`sys_load_p < 0` 时把负载瓦数并进光伏并去掉负载节点、节点标签移到环上方（`node(..., above)`）；此外电网节点的说明文字固定写「电网」，不随符号改成「电网输入 / 输出」。`system` 视图的光伏读数优先取 `system_plug_power`（交流侧）而非 `system_pv_power`（直流侧）。`alarm_entity` 在画布左上角画健康徽标（无告警绿圈对勾 / 有告警**实心红三角感叹号**，与厂商 G3 仪表盘一致），并在告警卡隐藏时由 `_syncRowSpan()` 经 `_gridItem()` 找到真正带 `grid-column` 的那层祖先、把它撑成 `1 / -1`（`0` 与「未知」都撑，因为 `only_when_alarm` 两种情况都不显示），同时由 `_wrapStyle()` 把插图钉在半行宽度上、居中，保证两种状态下**卡片高度一致**（宽度变、高度不变）；`max_width: 0` 表示不设像素上限，半行时 `max-width:none`、整行时取实测的半行宽度 |
 | `www/hoymiles-g2-history-chart.js` | 单调三次曲线平滑、**左边缘**从 0 线斜坡升起（`baseAt()` 锚点，右边缘不补——窗口右侧还在继续补充数据）、滚轮以光标位置为锚缩放横轴 / 拖动平移 / 双击复位（**仅曲线模式**，柱状图不缩放：30 根柱缩小后只剩四根，比较就没了）、默认从 0 点开始、载入时曲线从 0 线「长出来」（`_playGrow()`，30 秒自动刷新不重放）；`mode`（`auto`/`bar`/`line`）+ `scale` 让月/年电量画成**柱状图**，`show_totals` 在顶部显示「合计」并在图下排出月/年/总发电量三块小卡；`since` **只裁剪数据不缩横轴**；缺失的时间段补成 0（`_filledTimes()`，电量与 `%` 保持前值），且虚线光标指不进去（`holes`）；**恒为 0 的曲线仍画线**（`flat` 只跳过面积填充，stroke 无条件绘制，轴兜底到 `0..1`） |
-| `www/hoymiles-g2-control.js` | `_powerRange()`：滑条上界跟随主机上报的 `output_power` `max`（实测 master 声明 `min 100 / max 6000`），`RATED_W_BY_PID`（`1650 → 800`、`4161 → 1000`、`4162 → 2000`）降级为**型号未知时的退路**；下界仍取 `power_ctrl` 的 `min` |
+| `www/hoymiles-g2-control.js` | `_powerRange()`：滑条上下界都只读 `power_ctrl` 自己声明的 `min` / `max`（不再参考 `output_power`）；`RATED_W_BY_PID`（`1650 → 800`、`4161 → 1000`、`4162 → 2000`）仅在实体彻底缺失时兜底。`_outputItem()` 仍独立按 `output_power` 的声明渲染「输出功率」行 |
 | `www/hoymiles-g2-gauge.js` / `hoymiles-g2-energy-sankey.js` / `hoymiles-g2-tou-editor.js` / `hoymiles-g2-pack-list.js` | 各卡片按能力/机型自适应 |
 
 ### 产品图
@@ -85,6 +85,20 @@
 
 > `_build_storage_views()` 从不设置这个键，所以储能视图**逐像素不变**。`_signature()` 里也把它算进了缓存键（紧跟 `_isMicroInverter()` 之后），否则同一个 `dev_id` 的两个 variant 会互相复用对方的布局。
 
+#### `system` 视图的电网节点始终叫「电网」，不写方向
+
+储能画法里电网节点的说明文字会跟着符号改写成「电网输入」/「电网输出」，而 `variant: inverter-system` 一律只写「电网」：
+
+```js
+const caption = inverterSystem || Math.abs(g) < MIN_FLOW
+  ? t("Grid", "电网")
+  : (importing ? t("Grid In", "电网输入") : t("Grid Out", "电网输出"));
+```
+
+理由是电站级的 `sys_grid_p` 在自用、倒送、夜间 standby 之间来回穿零，读数在 0 附近抖动时「输入 / 输出」会跟着一秒一切，看起来像故障。而方向本来就有**两条更强、且不会闪烁的表达**：流动珠子的行进方向和连线的颜色（`#4a90d9` 取电 / `#f59e0b` 馈电）。所以微逆系统视图不靠文案再讲一遍方向，只在读数收敛到 `MIN_FLOW` 以外时才让珠子与颜色做判断。
+
+微储（`inverterSystem === false`）路径**完全不变**，仍然「电网输入 / 电网输出」。
+
 #### `system` 视图的光伏读数取 `sys_plug_p`，不取 `sys_pv_p`
 
 `system` 视图的那条「光伏」读数和功率曲线走 `sys_plug_p`（即 `sensor.<dev>_system_plug_power`），而 `device` 视图仍用 `sys_pv_p`（`_system_pv_power`）。
@@ -127,7 +141,7 @@
 
 #### 画布几何
 
-画布固定 `700 × 370`，坐标写死在 `hoymiles-g2-power-flow.js` 的 `IV_*` 常量里：
+画布默认 `700 × 370`，坐标写死在 `hoymiles-g2-power-flow.js` 的 `IV_*` 常量里。`1650` 走上下双路布局时画布高度收窄为 `700 × 330`（见「`1650` 画成两路 PV 输入」）：
 
 | 常量 | 值 | 含义 |
 | --- | --- | --- |
@@ -139,6 +153,11 @@
 | `IV_TERMINAL_INSET` | 22 | 连线终点距产品图边缘的内缩量（未登记机型兜底） |
 | `IV_SIDE_STAGGER` | 30 | 同一侧面有多路但图未登记接插件时的垂直错开量（兜底） |
 | `IV_CORNER` | 10 | 折线圆角半径 |
+| `IV_SPLIT_PV_CODE` | `"1650"` | 唯一被画成上下两路的型号；gate 在 SKU 上，不看端口数 |
+| `IV_SPLIT_X` | 95 | 两路节点共用的横坐标（= `IV_NODE_X[1]`） |
+| `IV_SPLIT_Y_TOP` / `IV_SPLIT_Y_BOT` | 70 / 218 | 上下两个节点的纵坐标 |
+| `IV_SPLIT_JOIN_GAP` | 26 | 汇合点距机身边缘（`term.pvLeftX`）的横向距离 |
+| `IV_SPLIT_H` | 330 | split 布局的画布高度（比 `IV_H` 少 40，因为底行说明文字带在 split 下是空的） |
 
 - 产品图按 `IV_PHOTO_ASPECT` 里登记的宽高比计算包围盒（`hiflow.png` = 736/486，`hiflow-800.png` = 189/168，`hiflow-pro-1in1.png` = 237/168，`hiflow-pro-2in1.png` = 360/168，`hiflow-pro-4in1.png` = 366/168）；未登记的图按 `360/168` 兜底。
 - 选图顺序：显式 `image` → `IV_IMAGE_BY_CODE`（按序列号前四位，见下）→ `IV_IMAGE_BY_COUNT`（按解析出的 PV 路数）→ 兜底 `hiflow-pro-2in1.png`。产品图是示意图的一部分而不是装饰（每条连线都停在它的边缘上），所以**必须**让机身输入路数与画出来的节点数一致，一拖四画在二输入机身上会让中间两条竖线看起来断在半空中。
@@ -155,15 +174,39 @@
 
 #### 单输入机型（`1650` / `4160`）
 
-`IV_PV_COUNT_BY_CODE` 把 `1650` 与 `4160` 都解析成 1 路 PV。两处行为因此不同：
+`IV_PV_COUNT_BY_CODE` 把 `1650` 与 `4160` 都解析成 1 路 PV，但两者的**画法并不相同**：
 
-- **文案是 `PV` 而不是 `PV1`。** 只有一路输入时编号没有区分作用，节点自己在 `_inverterNodes()` 里带上 `caption`（`pvCount === 1` 时取 `PV`，否则取 `PV<n>`），绘制层直接用这个字段，所以图和文案不会各说各话。两路以上仍然是 `PV1` / `PV2` … `PV4`，与厂商 App 和固件端口表一致。
-- **节点默认在左下，但 `4160` 的插头长在右脸。** `hiflow-800.png`（1650）的 MC4 在左脸约 57% 高处，走默认的左侧节点即可；`hiflow-pro-1in1.png`（4160）则**不是**：它的 AC 线从右上出去（约 27% 高处就在图的右侧边缘），DC 插头低低地挂在右脸约 81–98% 高处。`IV_TERMINAL_BY_ART` 因此为这张图登记了 `pvRightFrac: 0.893`、`pvRightXFrac: 0.8`、`pvSides: ["right"]`。
+- **`1650` 画成上下两路 `PV1` / `PV2`**（详见下一节），因为它们确实有两个 DC 输入通道。
+- **`4160` 仍然只画一路**，文案是 `PV` 而不是 `PV1`。只有一路输入时编号没有区分作用，节点自己在 `_inverterNodes()` 里带上 `caption`（普通单路取 `PV`，否则取 `PV<n>`），绘制层直接用这个字段，所以图和文案不会各说各话。两路以上仍然是 `PV1` / `PV2` … `PV4`，与厂商 App 和固件端口表一致。
+- **`4160` 的插头长在右脸。** `hiflow-pro-1in1.png`（4160）的 AC 线从右上出去（约 27% 高处就在图的右侧边缘），DC 插头低低地挂在右脸约 81–98% 高处。`IV_TERMINAL_BY_ART` 因此为这张图登记了 `pvRightFrac: 0.893`、`pvRightXFrac: 0.8`、`pvSides: ["right"]`。
   - `pvSides` 覆写「左脸默认」的判定（`slotSide()` 第一句就读它）；
   - `IV_NODE_X[1]` 只有一个 `95`，`slotX()` 在判定为 `right` 且原始 x 落在产品图左侧时把节点镜像到 `IV_W - x = 605`，于是圆圈留在右下、连线从右上方拐进右脸，不会横穿整张产品图；
-  - 该镜像只对「右脸 + 原本在左」的组合生效，`1650` / `4161` / `4162` 的节点位置与连线一个像素都没动。
+  - 该镜像只对「右脸 + 原本在左」的组合生效。
 - 左侧标签在圆圈下方，并网端口标签在圆圈**上方**（`above: true`），避免压到产品图。
 - 并网端口的数值正文用绝对值，方向只由珠子与线色表达（见下）。
+
+#### `1650` 画成两路 PV 输入（rev 后新增）
+
+`1650` 的固件确实报两个输入通道（`pv1_p` / `pv2_p`），厂商 App 也按两路画；但这两个读数**在固件里是同一个值的镜像**（实测 `pv1_p == pv2_p`，见「`pvs[]` 在两种机型上不一样」）。所以绘制上拆两路、读数上不拆：
+
+| | 行为 |
+| --- | --- |
+| 形状 | 左上 `PV1`（`y = IV_SPLIT_Y_TOP`）+ 左下 `PV2`（`y = IV_SPLIT_Y_BOT`），两条水平线先各自向右，在 `joinX = term.pvLeftX - IV_SPLIT_JOIN_GAP` 处汇合，再由最后一段水平线接进机身左脸 |
+| 数值 | 两个节点**都**显示合计值 `d.pvTotal ?? d.pvPorts[0]`（例如两路各 131.5 W 时报 `261 W` / `261 W`，合起来才对得上并网侧读数） |
+| 画布 | `viewBox` 高度从 `IV_H`(370) 收窄到 `IV_SPLIT_H`(330)：split 布局把端口贴到机身上下边而不是沿底行，`IV_H` 在底行下预留的说明文字带是空的 |
+| gate | `_splitPv()` 只看 `_productCode() === "1650"`，**不看端口数**；`pv_count: 1` 显式配置可关闭它 |
+
+为什么不按端口数 gate、为什么 `4160` 不拆：`4160` 也是单输入，但它的 artwork 与固件都只有一个 DC 引线，把它画成两路等于在图上凭空多出一根不存在的线。端口数也不可靠 —— `d.pvPorts` 由集成创建的实体决定（`1650` 只建 `pv1_power`，长度 1），拿它做 gate 就永远拆不开。
+
+汇合的实现是 `mergeRoute()`：两条串各自生成**独立**的 `path`（各自有独立的流动珠子），但 `joinX` 与 `portY` 对同组所有串相同，于是垂直段重叠成一条线、最后一段水平线重复绘制在同一位置 —— 这就是「汇合」的视觉效果，不需要额外的合并图形。`M/H/V/H` 的四段式是为了让 `parsePath()` / `reversePath()` 继续可用（珠子沿路径运动要用）。注意它从环的**侧面**出发而不是穿过 rim，否则会画成环内的小圈。
+
+实测（`hiflow-800.png`，`pvFrac = 0.574`，`IV_PHOTO_MAX_H = 190`，`photo.l = 243.125`）：
+
+```
+PV1: M129 70  H217.125 V144.06 H243.125
+PV2: M129 218 H217.125 V144.06 H243.125
+并网: M571 121.45 H456.875
+```
 
 型号代码与产品图的对应：
 
@@ -441,6 +484,8 @@ SOURCE_STALE_SECONDS = {SRC_QUICK: 60}
 
 仪表盘只在**单口机型**用它：`_build_inverter_views` 的 `port_series` 在 `ports == 1` 时指向 `pv_total_power`，否则仍是逐口 `pv<n>_power`。微逆 `device` 视图的 PV 节点（`_inverterNodes`）同理：`pvCount === 1` 时取 `d.pvTotal ?? d.pvPorts[i]`。
 
+> `1650` 的 `device` 视图虽然画了两个气泡（`PV1` / `PV2`），**两个气泡都显示这个合计值**，因为固件不提供分路归属，不去猜。画的只是形状（两串进一根引线），不是第二个测量值。详见「`1650` 画成两路 PV 输入」。
+
 ### `plant_pv_energy_today`：master + slave 的电站级今日发电
 
 System 视图的「今日发电」原先是 `system_pv_energy_today`，但那是**单机**口径：实测主机 387 Wh、1650A02ABA09 148 Wh、4162A0211FDE 613 Wh，主机报的只是它自己。而 `system` 视图展示的是整个电站。
@@ -606,12 +651,13 @@ System 视图的「今日发电」原先是 `system_pv_energy_today`，但那是
 
 由此带来两个必须由卡片处理的问题，否则界面看起来像坏了：
 
-1. **滑条范围取 `output_power` 声明的 `max`，型号额定值只作退路。** 不取 `power_ctrl` 的 `max`（它是瞬时租约上界，FC22 声明过 132，实际能做 800 W，照抄会让滑条只有 0–132）；而当机型未知、`output_power` 也没有可用声明时，才回退到型号额定单机功率（卡片内置表：`1650 → 800`、`4161 → 1000`、`4162 → 2000`）。下界仍取 `power_ctrl` 声明的 `min`（微逆 0，储能机为负）。
+1. **滑条范围只看 `power_ctrl` 自己声明的 `min` / `max`，不再参考 `output_power`。** 那是这一行写入的实体，它的 `min` / `max` 按定义就是固件愿意为这次写入接受的区间，滑条既不会送出一个会被设备夹掉的值，也不会藏起一个设备会接受的值。下界取 `power_ctrl` 的 `min`（微逆 0，储能机为负 = 充电）。`output_power` 的声明只用于「输出功率」那一行，两行是**各自独立的设置**，现在也各自按自己的声明画。
 
-   > 早期版本曾经相反：上界一律取型号额定值，理由是「主机在两个主题上报的是整个系统合计能力，不是单机能力」。实测推翻了这条理由。当前主机 `RMI-4161A020A04A`（额定 1000 W）的 `power_ctrl` 声明为 `min 0 / max 100 / step 0.1`，`output_power` 声明为 `min 100 / max 6000 / step 1`——**`output_power` 的 `max` 才是主机愿意接受的输出上限**，而型号额定 1000 W 反而比它窄得多，按额定值截断会白白丢掉 5 kW 的可用幅度。所以现在的口径是：**跟随主机上报，额定值只兜底。**
-
-   注意「输出功率」那一行同样按 `output_power` 声明的范围渲染，这两行的上界因此在主机上是一致的（都来自 `output_power` 的 `max`）。区别只在 `power_ctrl` 的下界可以到 0。
-2. **有效上限必须读 discovery 声明的属性，不能读 `output_power` 实体的 state。** 该实体只有 `command_topic`、没有 `state_topic`，state 只是 HA 最后一次下发的值，会立刻过期。
+   > 曾经有一版相反：滑条上界跟随 `output_power` 声明的 `max`，理由是「`output_power` 才是主机愿意接受的输出上限」。这在 `master` 上是错的——`output_power` 是**装机级**的输出天花板，`master` 是替整组设备声明它的，实测声明 `min 100 / max 6000`；而单机 1000 W 的 `4161` 根本做不到。把滑条拖到最右端就下发了一个设备无法维持的设定值，这一行看起来就像坏了。所以现在的口径是：**`power_ctrl` 声明什么就是什么，`output_power` 与本行无关。**
+   >
+   > 更早还有一版把上界写死成型号额定值（`1650 → 800`、`4161 → 1000`、`4162 → 2000`），它被 `output_power` 版本取代过，现在降级为**仅在实体彻底缺失时的退路** —— 首次发现之前，或者设备根本不发布 `power_ctrl` 对象时。退路必须按机型区分：微逆截到 `0` 且永不为负，储能机可以低于零（充电）。
+2. **有效上限必须读 discovery 声明的属性，不能读 `output_power` 实体的 state。** 该实体只有 `command_topic`、没有 `state_topic`，state 只是 HA 最后一次下发的值，会立刻过期。读取走 `_attr()`，它直接从 `state.attributes` 取，**不因为 state 是 `unknown` / `unavailable` 就丢弃声明**。
+3. **声明的 `max` 只是 UI 建议，不是硬限。** 在 `power_ctrl` 声明 `max = 234` 时下发 `700`，设备照样接受并照做（实测输出 715 W）。滑条按声明收窄只是为了避免「拖到头还不生效」的观感，不代表设备拒绝更大的值。
 
 集成本身不去改写固件声明的范围（`discovery_override.py` 里 `number/{dev}/power_ctrl` 与 `output_power` 都走 `_patch_plain`，原样透传），所以这些数字一定来自设备。步进同样跟随声明：微逆 1 W，储能机 0.1 W。
 
@@ -746,6 +792,8 @@ PID 与属性的映射分散在前后端，改动时必须**同时**更新：
 | `www/hoymiles-g2-battery.js` | `IV_PID_PV_COUNT` | 电池卡片的微逆判定兜底 |
 
 JS 侧的两张表只是**兜底**：正常情况下卡片从实体里就能拿到端口数，只有实体尚未建立时才回退到按 PID 查表。
+
+注意 `IV_SPLIT_PV_CODE`（`1650` 拆两路）**不属于这三张表**，它不表达端口数（`1650` 的端口数仍是 1），只是一条针对具体 SKU 的绘制指令。加机型时不要顺手往它里面塞下一个型号。
 
 ### 发现流程（`mqtt_util.async_discover_dev_ids`）
 
