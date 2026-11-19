@@ -385,6 +385,40 @@ function _hmPowerFlowRegister() {
      leaves - the PV inputs feed it, and it feeds the house.  Its placement is
      defined again below, over the photo, now that the node is permanent. */
   const IV_NODE_GRID = { x: 605, y: 90 };
+
+  /* The one body that is drawn with **two** PV ports: the small HiFlow (1650).
+   *
+   * The firmware inside this unit reports two input voltages and two input
+   * powers (`pv1_p` / `pv2_p`), and on the units measured the two readings are
+   * identical - it is a one-connector body whose DC stage is described as two
+   * channels.  The vendor app draws it the way the hardware reads, so the
+   * Device view shows 左上 PV1 / 左下 PV2 and folds the two into the one figure
+   * it can actually report; `_svgInverter` prints the summed `pvTotal` on both
+   * ports because there is no per-channel number to show.
+   *
+   * Only this cut-out gets that treatment.  `4160` is also a single-input body
+   * (`IV_PV_COUNT_BY_CODE`), but its artwork runs its one DC lead out of the
+   * *right* face and it genuinely has one input, so splitting it would invent a
+   * port the hardware does not have.  The gate therefore names the SKU, not the
+   * port count.
+   *
+   * Geometry: the two ports are stacked on the left cheek and symmetric about
+   * the height the artwork puts its MC4 pair at (~57% down the body), so the
+   * two connectors arrive at the unit as one level pair of horizontals and meet
+   * on a short vertical a little clear of the body - the "两条线在机器左侧汇合"
+   * shape the vendor app draws.  `IV_SPLIT_JOIN_GAP` is how far that vertical
+   * stands off the photo, wide enough that the two runs read as separate
+   * horizontals and not as one thick line. */
+  const IV_SPLIT_PV_CODE = "1650";
+  const IV_SPLIT_X = 95;
+  const IV_SPLIT_Y_TOP = 70;
+  const IV_SPLIT_Y_BOT = 218;
+  const IV_SPLIT_JOIN_GAP = 26;
+  /* The drawing is shorter than `IV_H` in this variant: the ports sit against
+     the body's own top and bottom edges instead of along the bottom row, so the
+     strip under it `IV_H` reserves for a row of caption blocks is empty.  The
+     viewBox follows the content, which also makes the unit itself larger. */
+  const IV_SPLIT_H = 330;
   /* PV input count by PID - the four digits at the start of the serial
      (`RMI-4161A0209FF6` -> `4161`, and the same for `GARAGE-4161A0209FF6`).
      The firmware's model string names a whole family - `HiFlow` covers both the
@@ -648,6 +682,38 @@ function _hmPowerFlowRegister() {
     const up = y2 < node.y;
     const rim = up ? node.y - NODE_R : node.y + NODE_R;
     return `M${node.x} ${rim} V${y2}`;
+  }
+
+  /**
+   * A connector that runs to a shared junction and then into the unit as one
+   * lead - the shape the vendor app draws for a two-channel input.
+   *
+   * Two DC strings leave their own ports, travel horizontally at their own
+   * height, meet on a short vertical a little clear of the body, and continue
+   * into the port as a single run.  That is *not* what `elbowRoute` produces: it
+   * turns each connector separately into the cheeks, which on this artwork would
+   * stack two elbows on top of each other and read as two cables entering the
+   * same hole.  The junction makes the merge explicit instead, and each string
+   * keeps its own path so each keeps its own streak - the branches stay
+   * distinguishable even though they enter the hardware together.
+   *
+   * Written as `M / H / V / H` (or `M / H` when the node is already level with
+   * the port) so `parsePath` / `reversePath` handle it unchanged.  The path
+   * runs port -> unit like every other connector, so a streak authored forward
+   * reads as "into the unit".
+   *
+   * `joinX` is the shared vertical and `portY` the height of the single lead
+   * that leaves it - both are the same for every string of the group, which is
+   * what draws the merge: the verticals overlap into one line and the last
+   * horizontal is emitted twice, in the same place.
+   */
+  function mergeRoute(node, joinX, portY, x2) {
+    const dir = joinX >= node.x ? 1 : -1;
+    /* Leave the ring sideways rather than through a rim: at a node level with
+       the port a rim start would draw a loop smaller than the ring itself. */
+    const start = `M${node.x + dir * NODE_R} ${node.y}`;
+    const tail = Math.abs(portY - node.y) < 0.5 ? "" : `V${portY} `;
+    return `${start} H${joinX} ${tail}H${x2}`;
   }
 
   /* Node artwork, baked straight out of the vendor app's icon set (see
@@ -2165,6 +2231,24 @@ function _hmPowerFlowRegister() {
     }
 
     /**
+     * True when the Device view draws **two** PV ports for this unit.
+     *
+     * Only the small HiFlow (1650) is drawn that way - see `IV_SPLIT_PV_CODE`
+     * for why a one-input body gets two nodes.  The test is on the SKU alone,
+     * never on the resolved port count, because `4160` is also a single-input
+     * body and its artwork (and its firmware) really does have one DC lead.
+     *
+     * `pv_count: 1` in the card config turns it off: a dashboard that forced a
+     * port count is stating what the hardware has, and that overrides the
+     * per-SKU default.
+     */
+    _splitPv() {
+      const forced = Math.round(Number(this._config && this._config.pv_count));
+      if (forced >= 1) return false;
+      return this._productCode() === IV_SPLIT_PV_CODE;
+    }
+
+    /**
      * The four digit PID from the serial, or `""`.
      *
      * `RMI-4161A0209FF6` -> `"4161"`, `4161A0209FF6` -> `"4161"`, and
@@ -2536,6 +2620,10 @@ function _hmPowerFlowRegister() {
       const photo = ivPhoto(art);
       const term = ivTerminals(art, photo);
       const pvNodes = [];
+      /* The small HiFlow is drawn with two PV ports although the firmware only
+         ever reports one figure: see `IV_SPLIT_PV_CODE`.  That variant replaces
+         the whole bottom row, so the input-count layout below is skipped. */
+      const split = this._splitPv();
       /* The connectors run from their node towards the unit, so each slot has
          to know where it may plug in.  A node on the outer end of the row turns
          sideways into the photo's side edge; a node underneath the photo has no
@@ -2576,46 +2664,72 @@ function _hmPowerFlowRegister() {
       for (let i = 0; i < pvCount; i += 1) sideCount[slotSide(i)] += 1;
       const sideSeen = { left: 0, right: 0, bottom: 0 };
 
-      for (let i = 0; i < pvCount; i += 1) {
-        const side = slotSide(i);
-        const x = slotX(i);
-        const under = side === "bottom";
-        const left = side === "left";
-        const slots = left ? term.pvLeftSlots : term.pvRightSlots;
-        const idx = sideSeen[side];
-        sideSeen[side] = idx + 1;
-        /* The height this connector stops at on the photo.  A measured plug
-           list gives one height per string, so PV1 stops on the upper pair of
-           the left cheek and PV2 on the lower one.  Without a list both strings
-           of a side would be aimed at the same point and the two connectors
-           would sit on top of each other, so they are fanned out by
-           `IV_SIDE_STAGGER` instead. */
-        let y2 = left ? term.pvLeftY : term.pvRightY;
-        if (slots) {
-          y2 = slots[Math.min(idx, slots.length - 1)];
-        } else if (sideCount[side] > 1) {
-          y2 += (idx - (sideCount[side] - 1) / 2) * IV_SIDE_STAGGER;
+      if (split) {
+        /* Two ports stacked on the left cheek, both printing the one figure the
+           unit can report.  `pvTotal` is every reported channel added up (see
+           `_data`), so the two nodes deliberately show the *same* number: the
+           hardware exposes two input channels but publishes no way to attribute
+           the power to one of them, and inventing a split would be a guess.
+           What the drawing gains is the shape - two strings, one lead into the
+           unit - not a second measurement. */
+        const value = d.pvTotal ?? d.pvPorts[0];
+        const joinX = term.pvLeftX - IV_SPLIT_JOIN_GAP;
+        const portY = term.pvLeftY;
+        for (const [i, y] of [[0, IV_SPLIT_Y_TOP], [1, IV_SPLIT_Y_BOT]]) {
+          pvNodes.push({
+            id: `pv${i + 1}`,
+            caption: `PV${i + 1}`,
+            x: IV_SPLIT_X,
+            y,
+            power: value,
+            route: mergeRoute({ x: IV_SPLIT_X, y }, joinX, portY, term.pvLeftX),
+          });
         }
-        pvNodes.push({
-          id: `pv${i + 1}`,
-          /* A body with a single DC input captions it `PV`, not `PV1`: there is
-             no second input for the number to tell apart, and the vendor app
-             drops it too once a unit is 一拖一. */
-          caption: pvCount === 1 ? "PV" : `PV${i + 1}`,
-          x,
-          y: IV_NODE_ROW_Y,
-          /* A one-input body has a single node, so `pvTotal` (every reported
-             input added up) is what it prints; several inputs each keep their
-             own reading.  See `_data` for why the sum is deliberate. */
-          power: pvCount === 1 ? (d.pvTotal ?? d.pvPorts[i]) : d.pvPorts[i],
-          route: under
-            ? riserRoute({ x, y: IV_NODE_ROW_Y }, term.pvBottom)
-            : elbowRoute(
-              { x, y: IV_NODE_ROW_Y },
-              left ? term.pvLeftX : term.pvRightX,
-              y2,
-            ),
-        });
+      }
+
+      if (!split) {
+        for (let i = 0; i < pvCount; i += 1) {
+          const side = slotSide(i);
+          const x = slotX(i);
+          const under = side === "bottom";
+          const left = side === "left";
+          const slots = left ? term.pvLeftSlots : term.pvRightSlots;
+          const idx = sideSeen[side];
+          sideSeen[side] = idx + 1;
+          /* The height this connector stops at on the photo.  A measured plug
+             list gives one height per string, so PV1 stops on the upper pair of
+             the left cheek and PV2 on the lower one.  Without a list both
+             strings of a side would be aimed at the same point and the two
+             connectors would sit on top of each other, so they are fanned out
+             by `IV_SIDE_STAGGER` instead. */
+          let y2 = left ? term.pvLeftY : term.pvRightY;
+          if (slots) {
+            y2 = slots[Math.min(idx, slots.length - 1)];
+          } else if (sideCount[side] > 1) {
+            y2 += (idx - (sideCount[side] - 1) / 2) * IV_SIDE_STAGGER;
+          }
+          pvNodes.push({
+            id: `pv${i + 1}`,
+            /* A body with a single DC input captions it `PV`, not `PV1`: there
+               is no second input for the number to tell apart, and the vendor
+               app drops it too once a unit is 一拖一.  The 1650 keeps `PV1` /
+               `PV2` because `_splitPv` draws it with two ports. */
+            caption: pvCount === 1 ? "PV" : `PV${i + 1}`,
+            x,
+            y: IV_NODE_ROW_Y,
+            /* A one-input body has a single node, so `pvTotal` (every reported
+               input added up) is what it prints; several inputs each keep their
+               own reading.  See `_data` for why the sum is deliberate. */
+            power: pvCount === 1 ? (d.pvTotal ?? d.pvPorts[i]) : d.pvPorts[i],
+            route: under
+              ? riserRoute({ x, y: IV_NODE_ROW_Y }, term.pvBottom)
+              : elbowRoute(
+                { x, y: IV_NODE_ROW_Y },
+                left ? term.pvLeftX : term.pvRightX,
+                y2,
+              ),
+          });
+        }
       }
 
       const routes = pvNodes.map((n) => ({
@@ -2694,12 +2808,17 @@ function _hmPowerFlowRegister() {
 
       const busy = [...d.pvPorts, d.gridPort]
         .some((v) => present(v) && Math.abs(num(v)) >= MIN_FLOW);
+      /* The split layout stacks its ports against the body instead of along the
+         bottom row, so the strip `IV_H` leaves under that row is empty and the
+         drawing can be cropped to its content - which also makes the unit
+         itself bigger in the same card. */
+      const h = split ? IV_SPLIT_H : IV_H;
 
-      return `<svg viewBox="0 0 ${IV_W} ${IV_H}" preserveAspectRatio="xMidYMid meet"
+      return `<svg viewBox="0 0 ${IV_W} ${h}" preserveAspectRatio="xMidYMid meet"
                    xmlns="http://www.w3.org/2000/svg" role="img">
         ${this._config.gradient === false
           ? ""
-          : `<rect class="pf-bg" x="0" y="0" width="${IV_W}" height="${IV_H}"/>`}
+          : `<rect class="pf-bg" x="0" y="0" width="${IV_W}" height="${h}"/>`}
         <clipPath id="${NODE_CLIP_ID}" clipPathUnits="userSpaceOnUse">
           <circle cx="0" cy="0" r="${NODE_CLIP_R}"/>
         </clipPath>
@@ -3110,9 +3229,16 @@ function _hmPowerFlowRegister() {
            here and once in the header chip).  The sign is already normalised to
            the grid convention in `_data` - including its own-port fallback,
            which negates `grid_on_p` - so "positive means importing" holds for
-           both cases and the wording stays true. */
+           both cases and the wording stays true.
+
+           A micro inverter's installation keeps the plain 「电网」 wording at
+           every sign: that node is one port of the house (the meter border),
+           and the direction is already carried by the streak and the colour of
+           the connector.  A caption that flipped between 输入 and 输出 repeated
+           the same information in words and, on a system whose reading
+           oscillates around zero, made the label flicker. */
         // At ~0 W neither direction is true, so the node just says 电网.
-        const caption = Math.abs(g) < MIN_FLOW
+        const caption = inverterSystem || Math.abs(g) < MIN_FLOW
           ? t("Grid", "电网")
           : (importing ? t("Grid In", "电网输入") : t("Grid Out", "电网输出"));
         node(NODE_COL_R, NODE_ROW_TOP, "grid", working(d.grid),
