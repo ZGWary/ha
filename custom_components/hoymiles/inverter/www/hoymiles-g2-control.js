@@ -172,14 +172,14 @@ function _hmControlRegister() {
 
   /* Rated AC output of **one unit**, in watts, by product id.
    *
-   * This is a *fallback* for the power set-point range, not the primary answer
-   * any more (see `_powerRange`): the user asked for the slider ceiling to
-   * follow what the head unit reports, so `output_power`'s declared `max` wins
-   * whenever it exists.  This table is what is left when the device declares
-   * nothing - a `slave` publishes no `output_power` object at all.
+   * This is only the **fallback** for the power set-point range (see
+   * `_powerRange`): whatever `power_ctrl` itself declares wins, and this table
+   * is what is left when the device declares nothing at all.  It matters
+   * because a range with no upper bound cannot be drawn - the slider needs a
+   * number before the first `power_ctrl/config` arrives.
    *
-   * It is still worth knowing what "one unit" means, because the declared value
-   * can be the **whole installation's** capability: measured,
+   * It is worth knowing what "one unit" means, because a *master* can declare
+   * the **whole installation's** capability: measured,
    * `RMI-4161A0209FF6/power_ctrl/config` declares `min 0 / max 3000` while the
    * *same* serial declares `0 / 1000` under the `MI-` prefix it used before,
    * because a `master` adds its `slave`'s share.  Values measured off
@@ -2691,53 +2691,35 @@ function _hmControlRegister() {
 
     /** The range the power-control slider offers for **this one unit**.
      *
-     * The lower bound is `power_ctrl`'s declared `min` and always has been: it
-     * is meaningful (`0` on an inverter, which curtails to nothing; negative on
-     * a storage unit, which charges).
+     * Both bounds are `power_ctrl`'s own declaration, and nothing else.  That is
+     * the entity the row writes to, so its `min` / `max` is by definition the
+     * range the firmware will accept for that write - the slider can neither
+     * offer a value the device would clamp away nor hide one it would take.
      *
-     * The upper bound follows `output_power`'s declared `max`, which is what the
-     * head unit reports for the installation it is driving - the user asked for
-     * exactly that ("功率控制的上限值根据主机上报的数据为上限").  Measured on a
-     * `master` (`RMI-4161A020A04A`) that value is `6000`, i.e. the whole
-     * system's ceiling, so the slider can finally ask for more than one box can
-     * produce; `RATED_W_BY_PID` only stands in when the device declares nothing
-     * (a `slave` publishes no `output_power` object at all).
+     * The lower bound is meaningful: `0` on an inverter, which curtails to
+     * nothing; negative on a storage unit, which charges.
      *
-     * Two readings are deliberately *not* used here:
+     * `output_power` is deliberately **not** consulted any more.  It is a
+     * different setting (the installation-level output ceiling, which a `master`
+     * publishes on behalf of the whole set) and its declared `max` is `6000` on
+     * a `master` - five to six times what one box can deliver.  Dragging the
+     * power slider to the far end then sent a set-point the unit cannot hold, so
+     * the row looked broken instead of look useful.  `_outputItem` still shows,
+     * and writes, `output_power`'s own range - the two rows are separate
+     * settings and are now drawn from separate declarations.
      *
-     * * `power_ctrl`'s own `max` is the *transient* limit, not the capability:
-     *   the firmware rewrites it after every `output_power` command, and
-     *   `RMI-1650A028FC22` used to declare `132` while the hardware does 800 W.
-     *   Bounding to it makes the row unable to ask for more than the unit
-     *   happens to be doing.
-     * * the *state* of `output_power` is only the last value HA published - it
-     *   has no `state_topic` and goes stale immediately.
-     *
-     * A slider spanning the installation's ceiling while the firmware
-     * momentarily refuses to exceed some smaller declaration is the honest
-     * drawing: measured, publishing `700` while the declared `max` was `234`
-     * was honoured and the device output 715 W.
+     * The fallback only applies when the entity is genuinely absent - before its
+     * first discovery, or on a device that publishes no `power_ctrl` object -
+     * and it has to be the right shape for the model: a micro inverter curtails
+     * to `0` and never goes negative, whereas a storage unit charges below zero.
      */
     _powerRange() {
       const rated = this._ratedWatts();
-      /* The fallback is only reached when the entity is genuinely absent - a
-         `slave` publishes no `power_ctrl` object at all - and it has to be the
-         right shape for the model: a micro inverter curtails to `0` and never
-         goes negative, whereas a storage unit charges below zero. */
-      const declared = this._bounds(
+      return this._bounds(
         "power_ctrl",
         rated === null ? -1000 : 0,
         rated === null ? 2000 : rated,
       );
-      /* What the head unit says the whole installation can deliver.  Read from
-         `output_power` rather than from `power_ctrl` for the reason above. */
-      const ceiling = this._bounds(
-        "output_power",
-        declared.lo,
-        rated === null ? declared.hi : rated,
-      );
-      const hi = ceiling.hi > declared.lo ? ceiling.hi : declared.hi;
-      return { lo: declared.lo, hi };
     }
 
     /** Sub-line of the EMS row: the mode shown, plus the device's own report when
